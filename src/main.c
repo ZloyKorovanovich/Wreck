@@ -18,12 +18,22 @@ b32 msgCallback(i32 msg_code, const char* msg) {
     return FALSE;
 }
 
+
+
 i32 main(i32 argc, char** argv) {
     RenderSettings render_settings = {
         .bindings = (RenderBinding[]){ 
             (RenderBinding) {0, 0, RENDER_BINDING_TYPE_UNIFORM_BUFFER}
         },
-        .binding_count = 1
+        .binding_count = 1,
+        .nodes = (RenderNode[]) {
+            (RenderNode) {
+                .type = RENDER_NODE_TYPE_GRAPHICS,
+                .vertex_shader = "out/data/triangle_v.spv",
+                .fragment_shader = "out/data/triangle_f.spv"
+            }
+        },
+        .node_count = 1
     };
 
     /* fill everything */

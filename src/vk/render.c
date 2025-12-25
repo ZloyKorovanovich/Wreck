@@ -20,6 +20,21 @@ typedef struct {
     VkFormat depth_format;
 } SwapchainParams;
 
+/* shader information */
+typedef struct {
+    const char* shader_path;
+    VkShaderModule shader_module;
+} Shader;
+
+/* local Render node analog */
+typedef struct {
+    u32 type;
+    VkPipeline pipeline;
+    VkShaderModule vertex_shader;
+    VkShaderModule fragment_shader;
+    VkShaderModule compute_shader;
+} PipelineNode;
+
 /* local context available in scope of that file */
 typedef struct {
     VkImage swapchain_images[MAX_SWAPCHAIN_IMAGE_COUNT];
@@ -40,6 +55,9 @@ typedef struct {
     VkDescriptorSet descriptor_set;
     VkDescriptorSetLayout descriptor_set_layout;
     VkPipelineLayout pipeline_layout;
+    /* shaders */
+    Shader* shaders;
+    u32 shader_count;
 } RenderContext;
 
 typedef struct {
@@ -49,7 +67,7 @@ typedef struct {
 } GraphicsPipelineNode;
 
 /* @(FIX): add comments */
-i32 createShaderModules(const VulkanContext* vulkan_context, const char* file_path, msg_callback_pfn msg_callback, VkShaderModule* modules, u32 module_count) {
+i32 createShaders(const VulkanContext* vulkan_context, msg_callback_pfn msg_callback, Shader* shaders, u32 shader_count) {
     ByteBuffer read_buffer = {
         .buffer = malloc(4096 * 4),
         .size = 4096 * 4
@@ -58,8 +76,8 @@ i32 createShaderModules(const VulkanContext* vulkan_context, const char* file_pa
         MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL, "failed to allocate shader read buffer");
     }
 
-    for(u32 i = 0; i < module_count; i++) {
-        FILE* file = fopen(file_path, "rb");
+    for(u32 i = 0; i < shader_count; i++) {
+        FILE* file = fopen(shaders[i].shader_path, "rb");
         fseek(file, 0, SEEK_END);
         u64 shader_size = ftell(file);
         fseek(file, 0, SEEK_SET);
@@ -79,7 +97,7 @@ i32 createShaderModules(const VulkanContext* vulkan_context, const char* file_pa
             .pCode = (u32*)read_buffer.buffer,
             .codeSize = shader_size
         };
-        if(vkCreateShaderModule(vulkan_context->device, &shader_module_info, NULL, modules + i)) {
+        if(vkCreateShaderModule(vulkan_context->device, &shader_module_info, NULL, &shaders[i].shader_module)) {
             /* @(FIX): cant add description of error, we need file name here */
             MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_SHADER_MODULE, "failed to create shader module file: ");
         }
@@ -89,10 +107,6 @@ i32 createShaderModules(const VulkanContext* vulkan_context, const char* file_pa
 
 /* @(FIX): add comments */
 i32 createGraphicsPipeline(const VulkanContext* vulkan_context, const RenderContext* render_context, msg_callback_pfn msg_callback, const GraphicsPipelineNode* node, VkPipeline* pipeline) {
-    if(!node->vertex_shader || !node->fragment_shader) {
-        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RENDER_NODE_SHADERS_MISSING, "vertex or fragment shader for graphics pipeline is not specified");
-    }
-
     VkPipelineShaderStageCreateInfo shader_stages[2] = {
         (VkPipelineShaderStageCreateInfo) {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -608,6 +622,50 @@ i32 renderCreateContext(const VulkanContext* vulkan_context, const RenderSetting
         vkDestroyImage(vulkan_context->device, depth_prototype, NULL);
     }
 
+    /* SHADERS */ {
+        if(settings->node_count == 0) goto _no_shaders;
+
+        /* iterate to get shader count for allocation and validate nodes */
+        u32 shader_count = 0;
+        for(u32 i = 0; i < settings->node_count; i++) {
+            /* none nodes are just skipped */
+            if(settings->nodes[i].type == RENDER_NODE_TYPE_NONE) continue;
+            /* if graphics node */
+            if(settings->nodes[i].type == RENDER_NODE_TYPE_GRAPHICS) {
+                /* validate shader types */
+                if(!settings->nodes[i].vertex_shader || !settings->nodes[i].fragment_shader || settings->nodes[i].compute_shader) {
+                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RENDER_NODE_INVALID_SHADERS, "invalid shaders in graphics render node");
+                }
+                shader_count += 2;
+                continue;
+            }
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_INVALID_RENDER_NODE_TYPE, "invalid render node type detected");
+        }
+
+        /* allocate space for shaders */
+        render_context->shaders = malloc(sizeof(Shader) * shader_count);
+        render_context->shader_count = shader_count;
+        /* write file pathes without validation */
+        shader_count = 0;
+        for(u32 i = 0; i < settings->node_count; i++) {
+            /* if graphics node */
+            if(settings->nodes[i].type == RENDER_NODE_TYPE_GRAPHICS) {
+                /* add vertex and fragment shader pathes to array */
+                render_context->shaders[shader_count] = (Shader) {
+                    .shader_path = settings->nodes[i].vertex_shader
+                };
+                render_context->shaders[shader_count + 1] = (Shader) {
+                    .shader_path = settings->nodes[i].fragment_shader
+                };
+                shader_count += 2;
+            }
+        }
+        /* call create shaders function */        
+        createShaders(vulkan_context, msg_callback, render_context->shaders, render_context->shader_count);
+
+        _no_shaders: {}
+    }
+
     /* create swapchain and depth texture */
     if(MSG_IS_ERROR(renderCreateSwapchain(vulkan_context, msg_callback, render_context))) {
         MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_SWAPCHAIN_CREATE, "vulkan surface stats not suitable");
@@ -728,7 +786,13 @@ void renderDestroyContext(const VulkanContext* vulkan_context, RenderContext* re
         vkDestroyImage(vulkan_context->device, render_context->depth_image, NULL);
     }
 
-    /* FREE ALLOCATIONS */ {
+    /* SHADERS */ {
+        for(u32 i = 0; i < render_context->shader_count; i++) {
+            vkDestroyShaderModule(vulkan_context->device, render_context->shaders[i].shader_module, NULL);
+        }
+    }
+
+    /* ALLOCATIONS */ {
         /* @(FIX) should be done by different module that manages memory */
         vkFreeMemory(vulkan_context->device, render_context->targets_allocation, NULL);
     }
