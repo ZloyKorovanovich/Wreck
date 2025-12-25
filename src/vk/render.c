@@ -20,16 +20,11 @@ typedef struct {
     VkFormat depth_format;
 } SwapchainParams;
 
-/* shader information */
-typedef struct {
-    const char* shader_path;
-    VkShaderModule shader_module;
-} Shader;
-
 /* local Render node analog */
 typedef struct {
     u32 type;
     VkPipeline pipeline;
+    VkPipelineLayout pipeline_layout;
     VkShaderModule vertex_shader;
     VkShaderModule fragment_shader;
     VkShaderModule compute_shader;
@@ -55,174 +50,45 @@ typedef struct {
     VkDescriptorSet descriptor_set;
     VkDescriptorSetLayout descriptor_set_layout;
     VkPipelineLayout pipeline_layout;
-    /* shaders */
-    Shader* shaders;
-    u32 shader_count;
+    /* pipelines */
+    PipelineNode* pipeline_nodes;
+    u32 pipeline_node_count;
 } RenderContext;
 
-typedef struct {
-    VkPipelineLayout layout;
-    VkShaderModule vertex_shader;
-    VkShaderModule fragment_shader;
-} GraphicsPipelineNode;
 
-/* @(FIX): add comments */
-i32 createShaders(const VulkanContext* vulkan_context, msg_callback_pfn msg_callback, Shader* shaders, u32 shader_count) {
-    ByteBuffer read_buffer = {
-        .buffer = malloc(4096 * 4),
-        .size = 4096 * 4
-    };
-    if(!read_buffer.buffer) {
-        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL, "failed to allocate shader read buffer");
-    }
-
-    for(u32 i = 0; i < shader_count; i++) {
-        FILE* file = fopen(shaders[i].shader_path, "rb");
-        fseek(file, 0, SEEK_END);
-        u64 shader_size = ftell(file);
-        fseek(file, 0, SEEK_SET);
-        
-        if(shader_size > read_buffer.size) {
-            read_buffer.size = MAX(shader_size, read_buffer.size + 4096);
-            if(!(read_buffer.buffer = realloc(read_buffer.buffer, read_buffer.size))) {
-                MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_READ_BUFFER_REALLOC_FAIL, "shader read buffer reallocation failed");
-            }
-        }
-        if(fread(read_buffer.buffer, 1, shader_size, file) != shader_size) {
-            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_READ_FILE_TO_BUFFER, "failed to read shader to buffer");
-        }
-        
-        VkShaderModuleCreateInfo shader_module_info = {
-            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-            .pCode = (u32*)read_buffer.buffer,
-            .codeSize = shader_size
-        };
-        if(vkCreateShaderModule(vulkan_context->device, &shader_module_info, NULL, &shaders[i].shader_module)) {
-            /* @(FIX): cant add description of error, we need file name here */
-            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_SHADER_MODULE, "failed to create shader module file: ");
+/* remove shaders and compile directly to Pipeline node */
+VkShaderModule createShaderModule(const VulkanContext* vulkan_context, msg_callback_pfn msg_callback, const char* shader_path, ByteBuffer* read_buffer) {
+    VkShaderModule shader_module = NULL;
+    /* open file */
+    FILE* file = fopen(shader_path, "rb");
+    /* find file size */
+    fseek(file, 0, SEEK_END);
+    u64 shader_size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    
+    /* reallocate buffer if needed */
+    if(shader_size > read_buffer->size) {
+        read_buffer->size = MAX(shader_size, read_buffer->size + 4096);
+        if(!(read_buffer->buffer = realloc(read_buffer->buffer, read_buffer->size))) {
+            return NULL;
         }
     }
-    return MSG_CODE_SUCCESS;
+    /* read code from file */
+    if(fread(read_buffer->buffer, 1, shader_size, file) != shader_size) {
+        return NULL;
+    }
+
+    /* create module */
+    VkShaderModuleCreateInfo shader_module_info = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .pCode = (u32*)read_buffer->buffer,
+        .codeSize = shader_size
+    };
+    if(vkCreateShaderModule(vulkan_context->device, &shader_module_info, NULL, &shader_module)) {
+        return NULL;
+    }
+    return shader_module;
 }
-
-/* @(FIX): add comments */
-i32 createGraphicsPipeline(const VulkanContext* vulkan_context, const RenderContext* render_context, msg_callback_pfn msg_callback, const GraphicsPipelineNode* node, VkPipeline* pipeline) {
-    VkPipelineShaderStageCreateInfo shader_stages[2] = {
-        (VkPipelineShaderStageCreateInfo) {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-            .pName = SHADER_VERTEX_ENTRY,
-            .stage = VK_SHADER_STAGE_VERTEX_BIT,
-            .module = node->vertex_shader
-        },
-        (VkPipelineShaderStageCreateInfo) {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-            .pName = SHADER_FRAGMENT_ENTRY,
-            .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-            .module = node->fragment_shader
-        }
-    };
-
-    VkPipelineDynamicStateCreateInfo dynamic_state = (VkPipelineDynamicStateCreateInfo) {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-        .dynamicStateCount = 2,
-        .pDynamicStates = (const VkDynamicState[]){VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR}
-    };
-    VkPipelineVertexInputStateCreateInfo vertex_input_state = (VkPipelineVertexInputStateCreateInfo) {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-        .vertexAttributeDescriptionCount = 0,
-        .vertexBindingDescriptionCount = 0,
-        .pVertexAttributeDescriptions = NULL,
-        .pVertexBindingDescriptions = NULL
-    };
-    VkPipelineInputAssemblyStateCreateInfo input_assembly_state = (VkPipelineInputAssemblyStateCreateInfo) {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-        .primitiveRestartEnable = FALSE
-    };
-    VkPipelineRasterizationStateCreateInfo rasterization_state = (VkPipelineRasterizationStateCreateInfo) {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-        .depthClampEnable = FALSE,
-        .rasterizerDiscardEnable = FALSE,
-        .polygonMode = VK_POLYGON_MODE_FILL,
-        .lineWidth = 1.0f,
-        .cullMode = VK_CULL_MODE_NONE,
-        .frontFace = VK_FRONT_FACE_CLOCKWISE,
-        .depthBiasEnable = FALSE,
-        .depthBiasConstantFactor = 0.0f,
-        .depthBiasClamp = 0.0f,
-        .depthBiasSlopeFactor = 0.0f
-    };
-    VkPipelineMultisampleStateCreateInfo multisample_state = (VkPipelineMultisampleStateCreateInfo) {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        .sampleShadingEnable = FALSE,
-        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
-        .minSampleShading = 1.0f,
-        .pSampleMask = NULL,
-        .alphaToCoverageEnable = FALSE,
-        .alphaToOneEnable = FALSE
-    };
-    VkPipelineColorBlendAttachmentState color_blend_attachment_state = (VkPipelineColorBlendAttachmentState) {
-        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-        .blendEnable = VK_FALSE,
-        .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
-        .dstColorBlendFactor = VK_BLEND_FACTOR_ZERO,
-        .colorBlendOp = VK_BLEND_OP_ADD,
-        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
-        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
-        .alphaBlendOp = VK_BLEND_OP_ADD
-    };
-    VkPipelineColorBlendStateCreateInfo color_blend_state = (VkPipelineColorBlendStateCreateInfo) {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-        .logicOpEnable = VK_FALSE,
-        .logicOp = VK_LOGIC_OP_COPY,
-        .attachmentCount = 1,
-        .pAttachments = &color_blend_attachment_state,
-        .blendConstants[0] = 0.0f,
-        .blendConstants[1] = 0.0f,
-        .blendConstants[2] = 0.0f,
-        .blendConstants[3] = 0.0f
-    };
-    VkPipelineDepthStencilStateCreateInfo depth_stencil_state = (VkPipelineDepthStencilStateCreateInfo) {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-        .depthTestEnable = TRUE,
-        .depthWriteEnable = TRUE,
-        .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL
-    };
-    VkPipelineRenderingCreateInfoKHR rendering_create_info = (VkPipelineRenderingCreateInfoKHR) {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR,
-        .colorAttachmentCount = 1,
-        .pColorAttachmentFormats = &render_context->swapchain_params.surface_format.format,
-        .depthAttachmentFormat = render_context->swapchain_params.depth_format
-    };
-
-    VkPipelineViewportStateCreateInfo viewport_state = (VkPipelineViewportStateCreateInfo) {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-        .viewportCount = 1,
-        .scissorCount = 1
-    };
-
-    VkGraphicsPipelineCreateInfo pipeline_info = (VkGraphicsPipelineCreateInfo) {
-        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-        .basePipelineHandle = NULL,
-        .basePipelineIndex = -1,
-        .stageCount = 2,
-        .pStages = shader_stages,
-        .pVertexInputState = &vertex_input_state,
-        .pInputAssemblyState = &input_assembly_state,
-        .pViewportState = &viewport_state,
-        .pRasterizationState = &rasterization_state,
-        .pMultisampleState = &multisample_state,
-        .pDepthStencilState = &depth_stencil_state,
-        .pColorBlendState = &color_blend_state,
-        .pDynamicState = &dynamic_state,
-        .layout = node->layout,
-        .renderPass = NULL,
-        .pNext = &rendering_create_info
-    };
-
-    return MSG_CODE_SUCCESS;
-}
-
 
 /* selects optimal swapchain params */
 b32 getSwapchainParams(VkSurfaceKHR surface, VkPhysicalDevice device, GLFWwindow* window, SwapchainParams* swapchain_params) {
@@ -622,46 +488,49 @@ i32 renderCreateContext(const VulkanContext* vulkan_context, const RenderSetting
         vkDestroyImage(vulkan_context->device, depth_prototype, NULL);
     }
 
-    /* SHADERS */ {
+    /* PIPELINE NODES */ {
+        /* @(FIX): weird way of handling settings dont exist */
+        if(!settings) goto _no_shaders; 
         if(settings->node_count == 0) goto _no_shaders;
 
-        /* iterate to get shader count for allocation and validate nodes */
-        u32 shader_count = 0;
+        /* create shader read buffer */
+        ByteBuffer read_buffer = {
+            .buffer = malloc(4096 * 4),
+            .size = 4096 * 4
+        };
+        if(!read_buffer.buffer) {
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL, "failed to allocate shader read buffer");
+        }
+        /* allocate pipeline nodes buffer */
+        if(!(render_context->pipeline_nodes = malloc(sizeof(PipelineNode) * settings->node_count))) {
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL, "failed to allocate pipeline nodes buffer");
+        }
+
+        render_context->pipeline_node_count = 0;
+        /* transform render nodes to pipeline nodes */
         for(u32 i = 0; i < settings->node_count; i++) {
+            const RenderNode* node = &settings->nodes[i];
+            PipelineNode* pipeline_node = &render_context->pipeline_nodes[render_context->pipeline_node_count++];
             /* none nodes are just skipped */
-            if(settings->nodes[i].type == RENDER_NODE_TYPE_NONE) continue;
+            if(node->type == RENDER_NODE_TYPE_NONE) continue;
             /* if graphics node */
-            if(settings->nodes[i].type == RENDER_NODE_TYPE_GRAPHICS) {
+            if(node->type == RENDER_NODE_TYPE_GRAPHICS) {
+                *pipeline_node = (PipelineNode) {.type = RENDER_NODE_TYPE_GRAPHICS};
                 /* validate shader types */
-                if(!settings->nodes[i].vertex_shader || !settings->nodes[i].fragment_shader || settings->nodes[i].compute_shader) {
+                if(!node->vertex_shader || !node->fragment_shader || node->compute_shader) {
                     MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RENDER_NODE_INVALID_SHADERS, "invalid shaders in graphics render node");
                 }
-                shader_count += 2;
+                /* compile shader modules */
+                if(!(pipeline_node->vertex_shader = createShaderModule(vulkan_context, msg_callback, node->vertex_shader, &read_buffer))) {
+                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_SHADER_MODULE, "failed to create vertex shader module");
+                }
+                if(!(pipeline_node->fragment_shader = createShaderModule(vulkan_context, msg_callback, node->fragment_shader, &read_buffer))) {
+                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_SHADER_MODULE, "failed to create vertex shader module");
+                }
                 continue;
             }
             MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_INVALID_RENDER_NODE_TYPE, "invalid render node type detected");
         }
-
-        /* allocate space for shaders */
-        render_context->shaders = malloc(sizeof(Shader) * shader_count);
-        render_context->shader_count = shader_count;
-        /* write file pathes without validation */
-        shader_count = 0;
-        for(u32 i = 0; i < settings->node_count; i++) {
-            /* if graphics node */
-            if(settings->nodes[i].type == RENDER_NODE_TYPE_GRAPHICS) {
-                /* add vertex and fragment shader pathes to array */
-                render_context->shaders[shader_count] = (Shader) {
-                    .shader_path = settings->nodes[i].vertex_shader
-                };
-                render_context->shaders[shader_count + 1] = (Shader) {
-                    .shader_path = settings->nodes[i].fragment_shader
-                };
-                shader_count += 2;
-            }
-        }
-        /* call create shaders function */        
-        createShaders(vulkan_context, msg_callback, render_context->shaders, render_context->shader_count);
 
         _no_shaders: {}
     }
@@ -774,8 +643,12 @@ void renderDestroyContext(const VulkanContext* vulkan_context, RenderContext* re
 
     /* DESCRIPTORS */ {
         vkDestroyPipelineLayout(vulkan_context->device, render_context->pipeline_layout, NULL);
-        vkDestroyDescriptorSetLayout(vulkan_context->device, render_context->descriptor_set_layout, NULL);
-        vkDestroyDescriptorPool(vulkan_context->device, render_context->descirptor_pool, NULL);
+        if(render_context->descriptor_set_layout) {
+            vkDestroyDescriptorSetLayout(vulkan_context->device, render_context->descriptor_set_layout, NULL);
+        }
+        if(render_context->descirptor_pool) {
+            vkDestroyDescriptorPool(vulkan_context->device, render_context->descirptor_pool, NULL);
+        }
     }
 
     /* SWAPCHAIN IMAGES */ {
@@ -786,10 +659,17 @@ void renderDestroyContext(const VulkanContext* vulkan_context, RenderContext* re
         vkDestroyImage(vulkan_context->device, render_context->depth_image, NULL);
     }
 
-    /* SHADERS */ {
-        for(u32 i = 0; i < render_context->shader_count; i++) {
-            vkDestroyShaderModule(vulkan_context->device, render_context->shaders[i].shader_module, NULL);
+    /* PIPELINE NODES */ {
+        for(u32 i = 0; i < render_context->pipeline_node_count; i++) {
+            if(render_context->pipeline_nodes[i].type == RENDER_NODE_TYPE_GRAPHICS) {
+                vkDestroyShaderModule(vulkan_context->device, render_context->pipeline_nodes[i].vertex_shader, NULL);
+                vkDestroyShaderModule(vulkan_context->device, render_context->pipeline_nodes[i].fragment_shader, NULL);
+            }
+            if(render_context->pipeline_nodes[i].type == RENDER_NODE_TYPE_COMPUTE) {
+                vkDestroyShaderModule(vulkan_context->device, render_context->pipeline_nodes[i].compute_shader, NULL);
+            }
         }
+        free(render_context->pipeline_nodes);
     }
 
     /* ALLOCATIONS */ {

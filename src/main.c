@@ -18,10 +18,8 @@ b32 msgCallback(i32 msg_code, const char* msg) {
     return FALSE;
 }
 
-
-
 i32 main(i32 argc, char** argv) {
-    RenderSettings render_settings = {
+    const RenderSettings render_settings = {
         .bindings = (RenderBinding[]){ 
             (RenderBinding) {0, 0, RENDER_BINDING_TYPE_UNIFORM_BUFFER}
         },
@@ -35,17 +33,14 @@ i32 main(i32 argc, char** argv) {
         },
         .node_count = 1
     };
-
     /* fill everything */
-    VulkanInfo vulkan_info = {
+    const VulkanInfo vulkan_info = {
         .msg_callback = &msgCallback,
         .name = "Wreck Demo",
         .x = 800,
         .y = 600,
         .flags = VULKAN_FLAG_DEBUG,
         .version = MAKE_VERSION(0, 1, 0),
-
-        /* settings */
         .render_settings = &render_settings
     };
     /* run vulkan rendering! */
