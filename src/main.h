@@ -31,6 +31,12 @@ typedef unsigned b32;
 #define CLAMP(a, b, t) ((t < a) ? a : (t > b) ? b : t)
 
 
+typedef struct {
+    u8* buffer;
+    u64 size;
+} ByteBuffer;
+
+
 #define MSG_IS_ERROR(msg) (msg < 0)
 #define MSG_IS_WARNING(msg) (msg > 0)
 #define MSG_IS_SUCCESS(msg) (msg == 0)
@@ -91,7 +97,12 @@ typedef enum {
     MSG_CODE_ERROR_VK_SEMAPHORE_CREATE = -2147483619,
     MSG_CODE_ERROR_VK_FENCE_CREATE = -2147483618,
     MSG_CODE_ERROR_VK_COMMAND_BUFFER_ALLOCATE = -2147483617,
-    MSG_CODE_ERROR_VK_COMMAND_POOL_CREATE = -2147483616
+    MSG_CODE_ERROR_VK_COMMAND_POOL_CREATE = -2147483616,
+    MSG_CODE_ERROR_VK_RENDER_NODE_SHADERS_MISSING = -2147483615,
+    MSG_CODE_ERROR_VK_READ_BUFFER_REALLOC_FAIL = -2147483614,
+    MSG_CODE_ERROR_VK_READ_FILE_TO_BUFFER = -2147483613,
+    MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL = -2147483612,
+    MSG_CODE_ERROR_VK_CREATE_SHADER_MODULE = -2147483611
 } MSG_CODES_VK;
 
 /* Used by vulkan info struct, affects vulkan instance and glfw creation.
@@ -114,10 +125,24 @@ typedef struct {
     u32 type;
 } RenderBinding;
 
+typedef enum {
+    RENDER_NODE_TYPE_NONE = 0,
+    RENDER_NODE_TYPE_GRAPHICS = 1
+} RENDER_NODE_TYPES;
+
+typedef struct {
+    u32 node_type;
+    const char* vertex_shader;
+    const char* fragment_shader;
+    const char* compute_shader;
+} RenderNode;
+
 /* settings of render in vulkan */
 typedef struct {
     const RenderBinding* bindings;
     u32 binding_count;
+    const RenderNode* nodes;
+    u32 node_count;
 } RenderSettings;
 
 /* Used by vulkanRun function, provides necessary information for initialization

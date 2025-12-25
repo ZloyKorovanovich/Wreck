@@ -4,6 +4,10 @@
 #define MAX_DESCRIPTOR_SETS 16
 #define MAX_DESCRIPTOR_BINDING_COUNT 32
 
+#define SHADER_VERTEX_ENTRY "vertexMain"
+#define SHADER_FRAGMENT_ENTRY "fragmentMain"
+#define SHADER_COMPUTE_ENTRY "computeMain"
+
 /* used for swapchain parameters selection 
     and accessing info about swapchain from outside */
 typedef struct {
@@ -35,7 +39,175 @@ typedef struct {
     VkDescriptorPool descirptor_pool;
     VkDescriptorSet descriptor_set;
     VkDescriptorSetLayout descriptor_set_layout;
+    VkPipelineLayout pipeline_layout;
 } RenderContext;
+
+typedef struct {
+    VkPipelineLayout layout;
+    VkShaderModule vertex_shader;
+    VkShaderModule fragment_shader;
+} GraphicsPipelineNode;
+
+/* @(FIX): add comments */
+i32 createShaderModules(const VulkanContext* vulkan_context, const char* file_path, msg_callback_pfn msg_callback, VkShaderModule* modules, u32 module_count) {
+    ByteBuffer read_buffer = {
+        .buffer = malloc(4096 * 4),
+        .size = 4096 * 4
+    };
+    if(!read_buffer.buffer) {
+        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL, "failed to allocate shader read buffer");
+    }
+
+    for(u32 i = 0; i < module_count; i++) {
+        FILE* file = fopen(file_path, "rb");
+        fseek(file, 0, SEEK_END);
+        u64 shader_size = ftell(file);
+        fseek(file, 0, SEEK_SET);
+        
+        if(shader_size > read_buffer.size) {
+            read_buffer.size = MAX(shader_size, read_buffer.size + 4096);
+            if(!(read_buffer.buffer = realloc(read_buffer.buffer, read_buffer.size))) {
+                MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_READ_BUFFER_REALLOC_FAIL, "shader read buffer reallocation failed");
+            }
+        }
+        if(fread(read_buffer.buffer, 1, shader_size, file) != shader_size) {
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_READ_FILE_TO_BUFFER, "failed to read shader to buffer");
+        }
+        
+        VkShaderModuleCreateInfo shader_module_info = {
+            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+            .pCode = (u32*)read_buffer.buffer,
+            .codeSize = shader_size
+        };
+        if(vkCreateShaderModule(vulkan_context->device, &shader_module_info, NULL, modules + i)) {
+            /* @(FIX): cant add description of error, we need file name here */
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_SHADER_MODULE, "failed to create shader module file: ");
+        }
+    }
+    return MSG_CODE_SUCCESS;
+}
+
+/* @(FIX): add comments */
+i32 createGraphicsPipeline(const VulkanContext* vulkan_context, const RenderContext* render_context, msg_callback_pfn msg_callback, const GraphicsPipelineNode* node, VkPipeline* pipeline) {
+    if(!node->vertex_shader || !node->fragment_shader) {
+        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RENDER_NODE_SHADERS_MISSING, "vertex or fragment shader for graphics pipeline is not specified");
+    }
+
+    VkPipelineShaderStageCreateInfo shader_stages[2] = {
+        (VkPipelineShaderStageCreateInfo) {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .pName = SHADER_VERTEX_ENTRY,
+            .stage = VK_SHADER_STAGE_VERTEX_BIT,
+            .module = node->vertex_shader
+        },
+        (VkPipelineShaderStageCreateInfo) {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .pName = SHADER_FRAGMENT_ENTRY,
+            .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .module = node->fragment_shader
+        }
+    };
+
+    VkPipelineDynamicStateCreateInfo dynamic_state = (VkPipelineDynamicStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = 2,
+        .pDynamicStates = (const VkDynamicState[]){VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR}
+    };
+    VkPipelineVertexInputStateCreateInfo vertex_input_state = (VkPipelineVertexInputStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexAttributeDescriptionCount = 0,
+        .vertexBindingDescriptionCount = 0,
+        .pVertexAttributeDescriptions = NULL,
+        .pVertexBindingDescriptions = NULL
+    };
+    VkPipelineInputAssemblyStateCreateInfo input_assembly_state = (VkPipelineInputAssemblyStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        .primitiveRestartEnable = FALSE
+    };
+    VkPipelineRasterizationStateCreateInfo rasterization_state = (VkPipelineRasterizationStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .depthClampEnable = FALSE,
+        .rasterizerDiscardEnable = FALSE,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .lineWidth = 1.0f,
+        .cullMode = VK_CULL_MODE_NONE,
+        .frontFace = VK_FRONT_FACE_CLOCKWISE,
+        .depthBiasEnable = FALSE,
+        .depthBiasConstantFactor = 0.0f,
+        .depthBiasClamp = 0.0f,
+        .depthBiasSlopeFactor = 0.0f
+    };
+    VkPipelineMultisampleStateCreateInfo multisample_state = (VkPipelineMultisampleStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .sampleShadingEnable = FALSE,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        .minSampleShading = 1.0f,
+        .pSampleMask = NULL,
+        .alphaToCoverageEnable = FALSE,
+        .alphaToOneEnable = FALSE
+    };
+    VkPipelineColorBlendAttachmentState color_blend_attachment_state = (VkPipelineColorBlendAttachmentState) {
+        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        .blendEnable = VK_FALSE,
+        .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstColorBlendFactor = VK_BLEND_FACTOR_ZERO,
+        .colorBlendOp = VK_BLEND_OP_ADD,
+        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+        .alphaBlendOp = VK_BLEND_OP_ADD
+    };
+    VkPipelineColorBlendStateCreateInfo color_blend_state = (VkPipelineColorBlendStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .logicOpEnable = VK_FALSE,
+        .logicOp = VK_LOGIC_OP_COPY,
+        .attachmentCount = 1,
+        .pAttachments = &color_blend_attachment_state,
+        .blendConstants[0] = 0.0f,
+        .blendConstants[1] = 0.0f,
+        .blendConstants[2] = 0.0f,
+        .blendConstants[3] = 0.0f
+    };
+    VkPipelineDepthStencilStateCreateInfo depth_stencil_state = (VkPipelineDepthStencilStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = TRUE,
+        .depthWriteEnable = TRUE,
+        .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL
+    };
+    VkPipelineRenderingCreateInfoKHR rendering_create_info = (VkPipelineRenderingCreateInfoKHR) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR,
+        .colorAttachmentCount = 1,
+        .pColorAttachmentFormats = &render_context->swapchain_params.surface_format.format,
+        .depthAttachmentFormat = render_context->swapchain_params.depth_format
+    };
+
+    VkPipelineViewportStateCreateInfo viewport_state = (VkPipelineViewportStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .scissorCount = 1
+    };
+
+    VkGraphicsPipelineCreateInfo pipeline_info = (VkGraphicsPipelineCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .basePipelineHandle = NULL,
+        .basePipelineIndex = -1,
+        .stageCount = 2,
+        .pStages = shader_stages,
+        .pVertexInputState = &vertex_input_state,
+        .pInputAssemblyState = &input_assembly_state,
+        .pViewportState = &viewport_state,
+        .pRasterizationState = &rasterization_state,
+        .pMultisampleState = &multisample_state,
+        .pDepthStencilState = &depth_stencil_state,
+        .pColorBlendState = &color_blend_state,
+        .pDynamicState = &dynamic_state,
+        .layout = node->layout,
+        .renderPass = NULL,
+        .pNext = &rendering_create_info
+    };
+
+    return MSG_CODE_SUCCESS;
+}
 
 
 /* selects optimal swapchain params */
@@ -339,8 +511,24 @@ i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callbac
             .colorAttachmentCount = 1,
             .pColorAttachments = &attachments.screen_color,
             .layerCount = 1,
-            .pDepthAttachment = &attachments.screen_depth
+            .pDepthAttachment = &attachments.screen_depth,
+            .renderArea = (VkRect2D) {
+                .offset = {0, 0},
+                .extent = render_context->swapchain_params.extent
+            }
         };
+        VkCommandBufferBeginInfo command_buffer_begin_info = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
+        };
+
+        vkResetFences(vulkan_context->device, 1, &sync_objects.frame_fence);
+
+        vkResetCommandBuffer(command_buffer, 0);
+        vkBeginCommandBuffer(command_buffer, &command_buffer_begin_info);
+        vulkan_context->cmd_begin_rendering_khr(command_buffer, &rendering_info);
+
+        vulkan_context->cmd_end_rendering_khr(command_buffer);
+        vkEndCommandBuffer(command_buffer);
     }
 
     /* SYNC OBJECTS DESTROY */ {
@@ -493,6 +681,15 @@ i32 renderCreateContext(const VulkanContext* vulkan_context, const RenderSetting
             if(vkAllocateDescriptorSets(vulkan_context->device, &descriptor_set_info, &render_context->descriptor_set)) {
                 MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_DESCRIPTOR_SET, "failed to create descriptor set");
             }
+
+            VkPipelineLayoutCreateInfo pipeline_layout_info = {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                .pSetLayouts = &render_context->descriptor_set_layout,
+                .setLayoutCount = 1
+            };
+            if(vkCreatePipelineLayout(vulkan_context->device, &pipeline_layout_info, NULL, &render_context->pipeline_layout) != VK_SUCCESS) {
+                MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_PIPELINE_LAYOUT_CREATE, "failed to create pipeline layout for descriptor");
+            };
         }
     }
 
@@ -518,6 +715,7 @@ void renderDestroyContext(const VulkanContext* vulkan_context, RenderContext* re
     }
 
     /* DESCRIPTORS */ {
+        vkDestroyPipelineLayout(vulkan_context->device, render_context->pipeline_layout, NULL);
         vkDestroyDescriptorSetLayout(vulkan_context->device, render_context->descriptor_set_layout, NULL);
         vkDestroyDescriptorPool(vulkan_context->device, render_context->descirptor_pool, NULL);
     }
@@ -539,6 +737,7 @@ void renderDestroyContext(const VulkanContext* vulkan_context, RenderContext* re
     *render_context = (RenderContext){0};
 }
 
+/* render main func */
 i32 renderRun(const VulkanContext* vulkan_context, const RenderSettings* settings, msg_callback_pfn msg_callback) {
     RenderContext render_context = (RenderContext){0};
     if(MSG_IS_ERROR(renderCreateContext(vulkan_context, settings, msg_callback, &render_context))) {
