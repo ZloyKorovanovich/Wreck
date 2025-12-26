@@ -29,9 +29,14 @@ i32 main(i32 argc, char** argv) {
                 .type = RENDER_NODE_TYPE_GRAPHICS,
                 .vertex_shader = "out/data/triangle_v.spv",
                 .fragment_shader = "out/data/triangle_f.spv"
+            },
+            (RenderNode) {
+                .type = RENDER_NODE_TYPE_GRAPHICS,
+                .vertex_shader = "out/data/triangle_flip_v.spv",
+                .fragment_shader = "out/data/triangle_flip_f.spv"
             }
         },
-        .node_count = 1
+        .node_count = 2
     };
     /* fill everything */
     const VulkanInfo vulkan_info = {
@@ -39,7 +44,7 @@ i32 main(i32 argc, char** argv) {
         .name = "Wreck Demo",
         .x = 800,
         .y = 600,
-        .flags = VULKAN_FLAG_DEBUG,
+        .flags = VULKAN_FLAG_DEBUG | VULKAN_FLAG_WIN_RESIZE,
         .version = MAKE_VERSION(0, 1, 0),
         .render_settings = &render_settings
     };

@@ -24,7 +24,7 @@ typedef struct {
 typedef struct {
     u32 type;
     VkPipeline pipeline;
-    VkPipelineLayout pipeline_layout;
+    VkPipelineLayout pipeline_layout; /* is a sencond read-only reference to pipeline layout */
     VkShaderModule vertex_shader;
     VkShaderModule fragment_shader;
     VkShaderModule compute_shader;
@@ -57,7 +57,7 @@ typedef struct {
 
 
 /* remove shaders and compile directly to Pipeline node */
-VkShaderModule createShaderModule(const VulkanContext* vulkan_context, msg_callback_pfn msg_callback, const char* shader_path, ByteBuffer* read_buffer) {
+VkShaderModule createShaderModule(VkDevice device, const char* shader_path, ByteBuffer* read_buffer) {
     VkShaderModule shader_module = NULL;
     /* open file */
     FILE* file = fopen(shader_path, "rb");
@@ -84,10 +84,134 @@ VkShaderModule createShaderModule(const VulkanContext* vulkan_context, msg_callb
         .pCode = (u32*)read_buffer->buffer,
         .codeSize = shader_size
     };
-    if(vkCreateShaderModule(vulkan_context->device, &shader_module_info, NULL, &shader_module)) {
+    if(vkCreateShaderModule(device, &shader_module_info, NULL, &shader_module)) {
         return NULL;
     }
     return shader_module;
+}
+
+/* modiffies pipeline nodes */
+b32 createGraphicsPipeline(VkDevice device, VkFormat color_format, VkFormat depth_format, PipelineNode* node) {
+    /* shader descriptors array */
+    VkPipelineShaderStageCreateInfo shader_stages[2] = {
+        (VkPipelineShaderStageCreateInfo) {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .pName = SHADER_VERTEX_ENTRY,
+            .stage = VK_SHADER_STAGE_VERTEX_BIT,
+            .module = node->vertex_shader
+        },
+        (VkPipelineShaderStageCreateInfo) {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .pName = SHADER_FRAGMENT_ENTRY,
+            .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .module = node->fragment_shader
+        }
+    };
+
+    /* dynamic states, changed on fly */
+    VkPipelineDynamicStateCreateInfo dynamic_state = (VkPipelineDynamicStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = 2,
+        .pDynamicStates = (const VkDynamicState[]){VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR}
+    };
+    /* settings for gpu pipeline */
+    VkPipelineVertexInputStateCreateInfo vertex_input_state = (VkPipelineVertexInputStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexAttributeDescriptionCount = 0,
+        .vertexBindingDescriptionCount = 0,
+        .pVertexAttributeDescriptions = NULL,
+        .pVertexBindingDescriptions = NULL
+    };
+    VkPipelineInputAssemblyStateCreateInfo input_assembly_state = (VkPipelineInputAssemblyStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        .primitiveRestartEnable = FALSE
+    };
+    VkPipelineRasterizationStateCreateInfo rasterization_state = (VkPipelineRasterizationStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .depthClampEnable = FALSE,
+        .rasterizerDiscardEnable = FALSE,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .lineWidth = 1.0f,
+        .cullMode = VK_CULL_MODE_NONE,
+        .frontFace = VK_FRONT_FACE_CLOCKWISE,
+        .depthBiasEnable = FALSE,
+        .depthBiasConstantFactor = 0.0f,
+        .depthBiasClamp = 0.0f,
+        .depthBiasSlopeFactor = 0.0f
+    };
+    VkPipelineMultisampleStateCreateInfo multisample_state = (VkPipelineMultisampleStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .sampleShadingEnable = FALSE,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        .minSampleShading = 1.0f,
+        .pSampleMask = NULL,
+        .alphaToCoverageEnable = FALSE,
+        .alphaToOneEnable = FALSE
+    };
+    VkPipelineColorBlendAttachmentState color_blend_attachment_state = (VkPipelineColorBlendAttachmentState) {
+        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        .blendEnable = VK_FALSE,
+        .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstColorBlendFactor = VK_BLEND_FACTOR_ZERO,
+        .colorBlendOp = VK_BLEND_OP_ADD,
+        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+        .alphaBlendOp = VK_BLEND_OP_ADD
+    };
+    VkPipelineColorBlendStateCreateInfo color_blend_state = (VkPipelineColorBlendStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .logicOpEnable = VK_FALSE,
+        .logicOp = VK_LOGIC_OP_COPY,
+        .attachmentCount = 1,
+        .pAttachments = &color_blend_attachment_state,
+        .blendConstants[0] = 0.0f,
+        .blendConstants[1] = 0.0f,
+        .blendConstants[2] = 0.0f,
+        .blendConstants[3] = 0.0f
+    };
+    VkPipelineDepthStencilStateCreateInfo depth_stencil_state = (VkPipelineDepthStencilStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = TRUE,
+        .depthWriteEnable = TRUE,
+        .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL
+    };
+    VkPipelineRenderingCreateInfoKHR rendering_create_info = (VkPipelineRenderingCreateInfoKHR) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR,
+        .colorAttachmentCount = 1,
+        .pColorAttachmentFormats = &color_format,
+        .depthAttachmentFormat = depth_format
+    };
+    /* dynamic, will be replaced */
+    VkPipelineViewportStateCreateInfo viewport_state = (VkPipelineViewportStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .scissorCount = 1
+    };
+
+    VkGraphicsPipelineCreateInfo pipeline_info = (VkGraphicsPipelineCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .basePipelineHandle = NULL,
+        .basePipelineIndex = -1,
+        .stageCount = 2,
+        .pStages = shader_stages,
+        .pVertexInputState = &vertex_input_state,
+        .pInputAssemblyState = &input_assembly_state,
+        .pViewportState = &viewport_state,
+        .pRasterizationState = &rasterization_state,
+        .pMultisampleState = &multisample_state,
+        .pDepthStencilState = &depth_stencil_state,
+        .pColorBlendState = &color_blend_state,
+        .pDynamicState = &dynamic_state,
+        .layout = node->pipeline_layout,
+        .renderPass = NULL,
+        .pNext = &rendering_create_info
+    };
+
+    if(vkCreateGraphicsPipelines(device, NULL, 1, &pipeline_info, NULL, &node->pipeline) != VK_SUCCESS) {
+        return FALSE;
+    }
+    return TRUE;
 }
 
 /* selects optimal swapchain params */
@@ -273,8 +397,39 @@ i32 renderCreateSwapchain(const VulkanContext* vulkan_context, msg_callback_pfn 
     return MSG_CODE_SUCCESS;
 }
 
+/* called when render loop notices window resize condition */
+i32 renderOnWindowResize(const VulkanContext* vulkan_context, msg_callback_pfn msg_callback, RenderContext* render_context) {
+    vkDeviceWaitIdle(vulkan_context->device);
+    
+    /* DESTRUCTION */ {
+        for(u32 i = 0; i < render_context->swapchain_image_count; i++) {
+            vkDestroyImageView(vulkan_context->device, render_context->swapchain_image_views[i], NULL);
+        }
+        vkDestroyImageView(vulkan_context->device, render_context->depth_view, NULL);
+        vkDestroyImage(vulkan_context->device, render_context->depth_image, NULL);
+        vkDestroySwapchainKHR(vulkan_context->device, render_context->swapchain, NULL);
+    }
+
+    /* vkGetPhysicalDeviceSurfaceCapabilitiesKHR it changes surface resolution somehow */
+    VkSurfaceCapabilitiesKHR surface_capabilities = (VkSurfaceCapabilitiesKHR){0};
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(vulkan_context->physical_device, vulkan_context->surface, &surface_capabilities);
+    /* get glfw size to clamp if surface resolution is invalid */
+    i32 width, height;
+    glfwGetFramebufferSize(vulkan_context->window, &width, &height);
+
+    render_context->swapchain_params.extent = (VkExtent2D) {
+        MIN(surface_capabilities.currentExtent.width, (u32)width),
+        MIN(surface_capabilities.currentExtent.height, (u32)height)
+    };
+    if(MSG_IS_ERROR(renderCreateSwapchain(vulkan_context, msg_callback, render_context))) {
+        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_SWAPCHAIN_RECREATE, "failed to recreate swapchain");
+    }
+
+    return MSG_CODE_SUCCESS;
+}
+
 /* runs main render loop */
-i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callback, const RenderContext* render_context) {
+i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callback, RenderContext* render_context) {
     typedef struct {
         VkSemaphore image_submit_semaphores[MAX_SWAPCHAIN_IMAGE_COUNT];
         VkSemaphore image_available_semaphore;
@@ -283,13 +438,8 @@ i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callbac
         VkImageMemoryBarrier image_top_barrier;
         VkImageMemoryBarrier image_bottom_barrier;
     } SyncObjects;
-    typedef struct {
-        VkRenderingAttachmentInfoKHR screen_color;
-        VkRenderingAttachmentInfoKHR screen_depth;
-    } Attachments;
 
     SyncObjects sync_objects = (SyncObjects){0};
-    Attachments attachments = (Attachments){0};
     VkCommandBuffer command_buffer = NULL;
 
 
@@ -361,55 +511,170 @@ i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callbac
         };
     }
 
-    /* ATTACHMENTS */ {
-        attachments.screen_color = (VkRenderingAttachmentInfoKHR) {
-            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
-            .imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL_KHR,
-            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-            .storeOp = VK_ATTACHMENT_STORE_OP_STORE
-        };
-
-        attachments.screen_depth = (VkRenderingAttachmentInfoKHR) {
-            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
-            .clearValue = (VkClearValue) {
-                .depthStencil = (VkClearDepthStencilValue){
-                    .depth = 1.0
-                }
-            },
-            .imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL_KHR,
-            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-            .storeOp = VK_ATTACHMENT_STORE_OP_STORE
-        };
-    }
-
     /* render loop itself */
     while (!glfwWindowShouldClose(vulkan_context->window)) {
         glfwPollEvents();
-        
-        VkRenderingInfoKHR rendering_info = {
-            .sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
-            .colorAttachmentCount = 1,
-            .pColorAttachments = &attachments.screen_color,
-            .layerCount = 1,
-            .pDepthAttachment = &attachments.screen_depth,
-            .renderArea = (VkRect2D) {
-                .offset = {0, 0},
-                .extent = render_context->swapchain_params.extent
+
+        u32 image_id = U32_MAX;
+        /* AQUIRE */ {
+            /* wait untill previous frame finishes */
+            vkWaitForFences(vulkan_context->device, 1, &sync_objects.frame_fence, VK_TRUE, U64_MAX);
+            VkResult image_acquire_result = vkAcquireNextImageKHR(vulkan_context->device, render_context->swapchain, U64_MAX, sync_objects.image_available_semaphore, NULL, &image_id);
+
+            /* check if frambuffer should resize */
+            if(image_acquire_result == VK_ERROR_OUT_OF_DATE_KHR || image_acquire_result == VK_SUBOPTIMAL_KHR) {
+                if(MSG_IS_ERROR(renderOnWindowResize(vulkan_context, msg_callback, render_context))) {
+                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RESIZE_FAIL, "error occured during window resize in the beginning of loop");
+                }
+                continue;
             }
-        };
-        VkCommandBufferBeginInfo command_buffer_begin_info = {
+            vkResetFences(vulkan_context->device, 1, &sync_objects.frame_fence);
+        }
+        
+        const VkCommandBufferBeginInfo command_buffer_begin_info = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
         };
-
-        vkResetFences(vulkan_context->device, 1, &sync_objects.frame_fence);
-
         vkResetCommandBuffer(command_buffer, 0);
         vkBeginCommandBuffer(command_buffer, &command_buffer_begin_info);
-        vulkan_context->cmd_begin_rendering_khr(command_buffer, &rendering_info);
 
-        vulkan_context->cmd_end_rendering_khr(command_buffer);
+        const VkImageMemoryBarrier image_top_barrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+            .image = render_context->swapchain_images[image_id]
+        };
+        const VkImageMemoryBarrier image_bottom_barrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+            .image = render_context->swapchain_images[image_id]
+        };
+
+        /* image transition to rendering */
+        
+        vkCmdPipelineBarrier(
+            command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 
+            0, 0, NULL, 0, NULL, 1, &image_top_barrier
+        );
+
+        /* SCREEN GRAPHICS */ {
+            /* screen attachments */
+            const VkRenderingAttachmentInfoKHR screen_color_attachment = {
+                .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
+                .imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL_KHR,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .imageView = render_context->swapchain_image_views[image_id]
+            };
+            const VkRenderingAttachmentInfoKHR screen_depth_attachment = {
+                .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
+                .clearValue = (VkClearValue) {
+                    .depthStencil = (VkClearDepthStencilValue){
+                        .depth = 1.0
+                    }
+                },
+                .imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL_KHR,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .imageView = render_context->depth_view
+            };
+            /* begin screen rendering */
+            const VkRenderingInfoKHR rendering_info = {
+                .sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
+                .colorAttachmentCount = 1,
+                .pColorAttachments = &screen_color_attachment,
+                .layerCount = 1,
+                .pDepthAttachment = &screen_depth_attachment,
+                .renderArea = (VkRect2D) {
+                    .offset = {0, 0},
+                    .extent = render_context->swapchain_params.extent
+                }
+            };
+            vulkan_context->cmd_begin_rendering_khr(command_buffer, &rendering_info);
+            
+            /* set screen viewport & scissor */
+            VkViewport viewport = {
+                .width = render_context->swapchain_params.extent.width,
+                .height = render_context->swapchain_params.extent.height,
+                .minDepth = 0.0,
+                .maxDepth = 1.0,
+                .x = 0,
+                .y = 0
+            };
+            vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+            vkCmdSetScissor(command_buffer, 0, 1, &rendering_info.renderArea);
+        
+            for(u32 i = 0; i < render_context->pipeline_node_count; i++) {
+                const PipelineNode* pipeline_node = &render_context->pipeline_nodes[i];
+                const u32 next_node_type = (i < render_context->pipeline_node_count) ? render_context->pipeline_nodes[i + 1].type : U32_MAX;
+                if(pipeline_node->type == RENDER_NODE_TYPE_GRAPHICS) {
+                    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_node->pipeline);
+                    vkCmdDraw(command_buffer, 3, 1, 0, 0);
+                    continue;
+                }
+            }
+
+            vulkan_context->cmd_end_rendering_khr(command_buffer);
+        }
+
+        /* image transition to presentation */
+        vkCmdPipelineBarrier(
+            command_buffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 
+            0, 0, NULL, 0, NULL, 1, &image_bottom_barrier
+        );
+
         vkEndCommandBuffer(command_buffer);
+        
+        /* SUBMIT */ {
+            /* sunmit work for render queue */
+            VkSubmitInfo submit_info = {
+                .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                .waitSemaphoreCount = 1,
+                .pWaitSemaphores = &sync_objects.image_available_semaphore,
+                .pWaitDstStageMask = (const VkPipelineStageFlags[]){VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT},
+                .signalSemaphoreCount = 1,
+                .pSignalSemaphores = &sync_objects.image_submit_semaphores[image_id],
+                .commandBufferCount = 1,
+                .pCommandBuffers = &command_buffer
+            };
+            vkQueueSubmit(vulkan_context->render_queue, 1, &submit_info, sync_objects.frame_fence);
+            /* present image with render queue */
+            VkPresentInfoKHR present_info = (VkPresentInfoKHR) {
+                .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                .waitSemaphoreCount = 1,
+                .pWaitSemaphores = &sync_objects.image_submit_semaphores[image_id],
+                .swapchainCount = 1,
+                .pSwapchains = &render_context->swapchain,
+                .pImageIndices = &image_id,
+                .pResults = NULL
+            };
+            VkResult present_result = vkQueuePresentKHR(vulkan_context->render_queue, &present_info);
+            if(present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR) {
+                if(MSG_IS_ERROR(renderOnWindowResize(vulkan_context, msg_callback, render_context))) {
+                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RESIZE_FAIL, "error occured during window resize in the end of loop");
+                }
+                continue;
+            }
+        }
     }
+
+    vkDeviceWaitIdle(vulkan_context->device);
 
     /* SYNC OBJECTS DESTROY */ {
         for(u32 i = 0; i < MAX_SWAPCHAIN_IMAGE_COUNT; i++) {
@@ -486,53 +751,6 @@ i32 renderCreateContext(const VulkanContext* vulkan_context, const RenderSetting
         }
         /* dont forget to delete prototypes */
         vkDestroyImage(vulkan_context->device, depth_prototype, NULL);
-    }
-
-    /* PIPELINE NODES */ {
-        /* @(FIX): weird way of handling settings dont exist */
-        if(!settings) goto _no_shaders; 
-        if(settings->node_count == 0) goto _no_shaders;
-
-        /* create shader read buffer */
-        ByteBuffer read_buffer = {
-            .buffer = malloc(4096 * 4),
-            .size = 4096 * 4
-        };
-        if(!read_buffer.buffer) {
-            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL, "failed to allocate shader read buffer");
-        }
-        /* allocate pipeline nodes buffer */
-        if(!(render_context->pipeline_nodes = malloc(sizeof(PipelineNode) * settings->node_count))) {
-            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL, "failed to allocate pipeline nodes buffer");
-        }
-
-        render_context->pipeline_node_count = 0;
-        /* transform render nodes to pipeline nodes */
-        for(u32 i = 0; i < settings->node_count; i++) {
-            const RenderNode* node = &settings->nodes[i];
-            PipelineNode* pipeline_node = &render_context->pipeline_nodes[render_context->pipeline_node_count++];
-            /* none nodes are just skipped */
-            if(node->type == RENDER_NODE_TYPE_NONE) continue;
-            /* if graphics node */
-            if(node->type == RENDER_NODE_TYPE_GRAPHICS) {
-                *pipeline_node = (PipelineNode) {.type = RENDER_NODE_TYPE_GRAPHICS};
-                /* validate shader types */
-                if(!node->vertex_shader || !node->fragment_shader || node->compute_shader) {
-                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RENDER_NODE_INVALID_SHADERS, "invalid shaders in graphics render node");
-                }
-                /* compile shader modules */
-                if(!(pipeline_node->vertex_shader = createShaderModule(vulkan_context, msg_callback, node->vertex_shader, &read_buffer))) {
-                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_SHADER_MODULE, "failed to create vertex shader module");
-                }
-                if(!(pipeline_node->fragment_shader = createShaderModule(vulkan_context, msg_callback, node->fragment_shader, &read_buffer))) {
-                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_SHADER_MODULE, "failed to create vertex shader module");
-                }
-                continue;
-            }
-            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_INVALID_RENDER_NODE_TYPE, "invalid render node type detected");
-        }
-
-        _no_shaders: {}
     }
 
     /* create swapchain and depth texture */
@@ -620,6 +838,58 @@ i32 renderCreateContext(const VulkanContext* vulkan_context, const RenderSetting
         }
     }
 
+    /* PIPELINE NODES */ {
+        /* @(FIX): weird way of handling settings dont exist */
+        if(!settings) goto _no_shaders; 
+        if(settings->node_count == 0) goto _no_shaders;
+
+        /* create shader read buffer */
+        ByteBuffer read_buffer = {
+            .buffer = malloc(4096 * 4),
+            .size = 4096 * 4
+        };
+        if(!read_buffer.buffer) {
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL, "failed to allocate shader read buffer");
+        }
+        /* allocate pipeline nodes buffer */
+        if(!(render_context->pipeline_nodes = malloc(sizeof(PipelineNode) * settings->node_count))) {
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL, "failed to allocate pipeline nodes buffer");
+        }
+
+        render_context->pipeline_node_count = 0;
+        /* transform render nodes to pipeline nodes */
+        for(u32 i = 0; i < settings->node_count; i++) {
+            const RenderNode* node = &settings->nodes[i];
+            PipelineNode* pipeline_node = &render_context->pipeline_nodes[render_context->pipeline_node_count++];
+            /* none nodes are just skipped */
+            if(node->type == RENDER_NODE_TYPE_NONE) continue;
+            /* if graphics node */
+            if(node->type == RENDER_NODE_TYPE_GRAPHICS) {
+                *pipeline_node = (PipelineNode) {.type = RENDER_NODE_TYPE_GRAPHICS, .pipeline_layout = render_context->pipeline_layout};
+                /* validate shader types */
+                if(!node->vertex_shader || !node->fragment_shader || node->compute_shader) {
+                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RENDER_NODE_INVALID_SHADERS, "invalid shaders in graphics render node");
+                }
+                /* compile shader modules */
+                if(!(pipeline_node->vertex_shader = createShaderModule(vulkan_context->device, node->vertex_shader, &read_buffer))) {
+                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_SHADER_MODULE, "failed to create vertex shader module");
+                }
+                if(!(pipeline_node->fragment_shader = createShaderModule(vulkan_context->device, node->fragment_shader, &read_buffer))) {
+                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_SHADER_MODULE, "failed to create vertex shader module");
+                }
+
+                if(!createGraphicsPipeline(vulkan_context->device, render_context->swapchain_params.surface_format.format, render_context->swapchain_params.depth_format, pipeline_node)) {
+                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_PIPELINE_CREATE, "failed to create graphics pipeline");
+                }
+
+                continue;
+            }
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_INVALID_RENDER_NODE_TYPE, "invalid render node type detected");
+        }
+
+        _no_shaders: {}
+    }
+
     /* COMMAND BUFFERS */ {
         VkCommandPoolCreateInfo command_pool_info = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -641,6 +911,21 @@ void renderDestroyContext(const VulkanContext* vulkan_context, RenderContext* re
         vkDestroyCommandPool(vulkan_context->device, render_context->command_pool, NULL);
     }
 
+    /* PIPELINE NODES */ {
+        for(u32 i = 0; i < render_context->pipeline_node_count; i++) {
+            if(render_context->pipeline_nodes[i].type == RENDER_NODE_TYPE_GRAPHICS) {
+                vkDestroyPipeline(vulkan_context->device, render_context->pipeline_nodes[i].pipeline, NULL);
+                vkDestroyShaderModule(vulkan_context->device, render_context->pipeline_nodes[i].vertex_shader, NULL);
+                vkDestroyShaderModule(vulkan_context->device, render_context->pipeline_nodes[i].fragment_shader, NULL);
+            }
+            if(render_context->pipeline_nodes[i].type == RENDER_NODE_TYPE_COMPUTE) {
+                vkDestroyPipeline(vulkan_context->device, render_context->pipeline_nodes[i].pipeline, NULL);
+                vkDestroyShaderModule(vulkan_context->device, render_context->pipeline_nodes[i].compute_shader, NULL);
+            }
+        }
+        free(render_context->pipeline_nodes);
+    }
+
     /* DESCRIPTORS */ {
         vkDestroyPipelineLayout(vulkan_context->device, render_context->pipeline_layout, NULL);
         if(render_context->descriptor_set_layout) {
@@ -657,19 +942,6 @@ void renderDestroyContext(const VulkanContext* vulkan_context, RenderContext* re
         }
         vkDestroyImageView(vulkan_context->device, render_context->depth_view, NULL);
         vkDestroyImage(vulkan_context->device, render_context->depth_image, NULL);
-    }
-
-    /* PIPELINE NODES */ {
-        for(u32 i = 0; i < render_context->pipeline_node_count; i++) {
-            if(render_context->pipeline_nodes[i].type == RENDER_NODE_TYPE_GRAPHICS) {
-                vkDestroyShaderModule(vulkan_context->device, render_context->pipeline_nodes[i].vertex_shader, NULL);
-                vkDestroyShaderModule(vulkan_context->device, render_context->pipeline_nodes[i].fragment_shader, NULL);
-            }
-            if(render_context->pipeline_nodes[i].type == RENDER_NODE_TYPE_COMPUTE) {
-                vkDestroyShaderModule(vulkan_context->device, render_context->pipeline_nodes[i].compute_shader, NULL);
-            }
-        }
-        free(render_context->pipeline_nodes);
     }
 
     /* ALLOCATIONS */ {

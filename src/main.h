@@ -25,6 +25,7 @@ typedef unsigned b32;
 #define FALSE 0
 
 #define U32_MAX 0xffffffff
+#define U64_MAX 0xffffffffffffffff
 
 #define MIN(a, b) (a < b ? a : b)
 #define MAX(a, b) (a > b ? a : b)
@@ -103,7 +104,10 @@ typedef enum {
     MSG_CODE_ERROR_VK_READ_FILE_TO_BUFFER = -2147483613,
     MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL = -2147483612,
     MSG_CODE_ERROR_VK_CREATE_SHADER_MODULE = -2147483611,
-    MSG_CODE_ERROR_VK_INVALID_RENDER_NODE_TYPE = -2147483610
+    MSG_CODE_ERROR_VK_INVALID_RENDER_NODE_TYPE = -2147483610,
+    MSG_CODE_ERROR_VK_PIPELINE_CREATE = -2147483609,
+    MSG_CODE_ERROR_VK_SWAPCHAIN_RECREATE = -2147483608,
+    MSG_CODE_ERROR_VK_RESIZE_FAIL = -2147483607
 } MSG_CODES_VK;
 
 /* Used by vulkan info struct, affects vulkan instance and glfw creation.
@@ -134,6 +138,7 @@ typedef enum {
 
 typedef struct {
     u32 type;
+    u32 layout_set_id;
     const char* vertex_shader;
     const char* fragment_shader;
     const char* compute_shader;
