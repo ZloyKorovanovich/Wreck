@@ -81,6 +81,7 @@ VkShaderModule createShaderModule(VkDevice device, const char* shader_path, Byte
     VkShaderModule shader_module = NULL;
     /* open file */
     FILE* file = fopen(shader_path, "rb");
+    if(!file) return NULL;
     /* find file size */
     fseek(file, 0, SEEK_END);
     u64 shader_size = ftell(file);
@@ -1204,6 +1205,7 @@ i32 renderCreateContext(const VulkanContext* vulkan_context, const RenderSetting
             MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_INVALID_RENDER_NODE_TYPE, "invalid render node type detected");
         }
 
+        free(read_buffer.buffer);
         _no_shaders: {}
     }
 
