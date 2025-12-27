@@ -39,6 +39,7 @@ typedef struct {
     RenderMemoryWrite_pfn init_batch;
     RenderMemoryWrite_pfn frame_batch;
     u64 size;
+    u32 binding;
 } ResourceNode;
 
 /* local context available in scope of that file */
@@ -68,6 +69,10 @@ typedef struct {
     u32 resource_node_count;
     VkDeviceMemory device_resource_memory;
     VkDeviceMemory host_resource_memory;
+    u64 device_resource_memory_size;
+    u64 host_resource_memory_size;
+    void* host_resource_memory_map;
+    RenderUpdate_pfn update_callback;
 } RenderContext;
 
 
@@ -468,23 +473,29 @@ i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callbac
         VkSemaphore image_available_semaphore;
         VkSemaphore image_finished_semaphore;
         VkFence frame_fence;
+        VkFence transfer_fence;
         VkImageMemoryBarrier image_top_barrier;
         VkImageMemoryBarrier image_bottom_barrier;
     } SyncObjects;
 
     SyncObjects sync_objects = (SyncObjects){0};
     VkCommandBuffer command_buffer = NULL;
+    VkCommandBuffer transfer_command_buffer = NULL;
 
+    /* @(FIX): add comments */
     /* COMMAND BUFFER */ {
         VkCommandBufferAllocateInfo cmbuffers_info = (VkCommandBufferAllocateInfo) {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .commandBufferCount = 1,
+            .commandBufferCount = 2,
             .commandPool = render_context->command_pool,
             .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY
         };
-        if(vkAllocateCommandBuffers(vulkan_context->device, &cmbuffers_info, &command_buffer) != VK_SUCCESS) {
+        VkCommandBuffer command_buffers[2] = {0};
+        if(vkAllocateCommandBuffers(vulkan_context->device, &cmbuffers_info, command_buffers) != VK_SUCCESS) {
             MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_COMMAND_BUFFER_ALLOCATE, "failed to allocate command buffer");
         }
+        command_buffer = command_buffers[0];
+        transfer_command_buffer = command_buffers[1];
     }
 
     /* SYNC OBJECTS */ {
@@ -511,7 +522,10 @@ i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callbac
 
         /* fence for gpu cpu sync */
         if(vkCreateFence(vulkan_context->device, &fence_info, NULL, &sync_objects.frame_fence) != VK_SUCCESS) {
-            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_FENCE_CREATE, "failed to create image finished semaphore");
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_FENCE_CREATE, "failed to create frame fence");
+        }
+        if(vkCreateFence(vulkan_context->device, &fence_info, NULL, &sync_objects.transfer_fence) != VK_SUCCESS) {
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_FENCE_CREATE, "failed to create transfer fence");
         }
 
         /* barriers */
@@ -560,7 +574,8 @@ i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callbac
         }
         *resource_descriptor_write = (ResourceDescriptorWriteBuffer){0};
 
-        for(u32 i = 0; i < render_context->resource_node_count; i++) {
+        const u32 resource_node_count = render_context->resource_node_count;
+        for(u32 i = 0; i < resource_node_count; i++) {
             const ResourceNode* resource_node = &render_context->resource_nodes[i];
             if(resource_node->type == RENDER_BINDING_TYPE_UNIFORM_BUFFER) {
                 resource_descriptor_write->buffer_infos[resource_descriptor_write->buffer_info_count] = (VkDescriptorBufferInfo) {
@@ -571,7 +586,7 @@ i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callbac
                 resource_descriptor_write->write_sets[resource_descriptor_write->write_set_count] = (VkWriteDescriptorSet) {
                     .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                     .dstSet = render_context->descriptor_set,
-                    .dstBinding = 0,
+                    .dstBinding = resource_node->binding,
                     .dstArrayElement = 0,
                     .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                     .descriptorCount = 1,
@@ -592,14 +607,121 @@ i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callbac
         _skip_descriptors: {}
     }
 
+
+    /* @(FIX): not checking for zero size map*/
+    /* INITIAL BATCH */ {
+        if(render_context->host_resource_memory_size != 0) {
+            if(vkMapMemory(vulkan_context->device, render_context->host_resource_memory, 0, render_context->host_resource_memory_size, 0, &render_context->host_resource_memory_map) != VK_SUCCESS) {
+                MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_MAP_MEMORY, "failed to map resource memory");
+            }
+        }
+
+        if(render_context->resource_node_count == 0) goto _skip_initial_batch;
+        const u32 resource_node_count = render_context->resource_node_count;
+
+        /* begin transfer buffer */
+        const VkCommandBufferBeginInfo command_buffer_begin_info = (VkCommandBufferBeginInfo) {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
+        };
+        vkResetCommandBuffer(transfer_command_buffer, 0);
+        vkBeginCommandBuffer(transfer_command_buffer, &command_buffer_begin_info);
+
+        u32 nodes_found = 0;
+        /* iterate through resources, write memory and then issue command buffer copy commands */
+        for(u32 i = 0; i < resource_node_count; i++) {
+            const ResourceNode* resource_node = &render_context->resource_nodes[i];
+            if(resource_node->init_batch) {
+                resource_node->init_batch((u8*)render_context->host_resource_memory_map + resource_node->host_offset);
+
+                VkBufferCopy buffer_copy = {
+                    .srcOffset = 0,
+                    .dstOffset = 0,
+                    .size = resource_node->size
+                };
+                vkCmdCopyBuffer(transfer_command_buffer, resource_node->host_resource, resource_node->device_resource, 1, &buffer_copy);
+                nodes_found++;
+            }
+        }
+        /* end transfer command buffer */
+        vkEndCommandBuffer(transfer_command_buffer);
+        if(nodes_found == 0) {
+            goto _skip_initial_batch;
+        };
+        vkResetFences(vulkan_context->device, 1, &sync_objects.transfer_fence);
+        /* submit to queue */
+        VkSubmitInfo submit_info = (VkSubmitInfo) {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .waitSemaphoreCount = 0,
+            .signalSemaphoreCount = 0,
+            .pWaitSemaphores = NULL,
+            .pWaitDstStageMask = NULL,
+            .pSignalSemaphores = NULL,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &transfer_command_buffer
+        };
+        vkQueueSubmit(vulkan_context->render_queue, 1, &submit_info, sync_objects.transfer_fence);
+        _skip_initial_batch: {}
+    }
+
     /* render loop itself */
     while (!glfwWindowShouldClose(vulkan_context->window)) {
         glfwPollEvents();
 
+        /* update call */
+        if(render_context->update_callback) {
+            RenderUpdateContext update_context = {
+                .screen_x = render_context->swapchain_params.extent.width,
+                .screen_y = render_context->swapchain_params.extent.height
+            };
+            render_context->update_callback(&update_context);
+        }
+
+        /* @(FIX): add comments */
+        /* FRAME BATCH */ {
+            if(vkGetFenceStatus(vulkan_context->device, sync_objects.transfer_fence) != VK_SUCCESS) goto _skip_frame_batch;
+
+            vkResetCommandBuffer(transfer_command_buffer, 0);
+            const VkCommandBufferBeginInfo transfer_command_buffer_begin_info = {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
+            };
+            vkBeginCommandBuffer(transfer_command_buffer, &transfer_command_buffer_begin_info);
+            const u32 resource_node_count = render_context->resource_node_count;
+            for(u32 i = 0; i < resource_node_count; i++) {
+                const ResourceNode* resource_node = &render_context->resource_nodes[i];
+                if(resource_node->frame_batch) {
+                    resource_node->frame_batch((u8*)render_context->host_resource_memory_map + resource_node->host_offset);
+                    
+                    VkBufferCopy buffer_copy = {
+                        .srcOffset = 0,
+                        .dstOffset = 0,
+                        .size = resource_node->size
+                    };
+                    vkCmdCopyBuffer(transfer_command_buffer, resource_node->host_resource, resource_node->device_resource, 1, &buffer_copy);
+                }
+            }
+            vkEndCommandBuffer(transfer_command_buffer);
+            /* submit to queue */
+            VkSubmitInfo submit_info = (VkSubmitInfo) {
+                .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                .waitSemaphoreCount = 0,
+                .signalSemaphoreCount = 0,
+                .pWaitSemaphores = NULL,
+                .pWaitDstStageMask = NULL,
+                .pSignalSemaphores = NULL,
+                .commandBufferCount = 1,
+                .pCommandBuffers = &transfer_command_buffer
+            };
+            vkResetFences(vulkan_context->device, 1, &sync_objects.transfer_fence);
+            vkQueueSubmit(vulkan_context->render_queue, 1, &submit_info, sync_objects.transfer_fence);
+
+            _skip_frame_batch: {}
+        }
+        
         u32 image_id = U32_MAX;
+
         /* AQUIRE */ {
             /* wait untill previous frame finishes */
-            vkWaitForFences(vulkan_context->device, 1, &sync_objects.frame_fence, VK_TRUE, U64_MAX);
+            vkWaitForFences(vulkan_context->device, 2, (VkFence[]){sync_objects.frame_fence, sync_objects.transfer_fence}, VK_TRUE, U64_MAX);
             VkResult image_acquire_result = vkAcquireNextImageKHR(vulkan_context->device, render_context->swapchain, U64_MAX, sync_objects.image_available_semaphore, NULL, &image_id);
 
             /* check if frambuffer should resize */
@@ -647,6 +769,10 @@ i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callbac
             .image = render_context->swapchain_images[image_id]
         };
 
+        /* bind descriptors */
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, render_context->pipeline_layout, 0, 1, &render_context->descriptor_set, 0, NULL);
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, render_context->pipeline_layout, 0, 1, &render_context->descriptor_set, 0, NULL);
+        
         /* image transition to rendering */
         
         vkCmdPipelineBarrier(
@@ -703,7 +829,6 @@ i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callbac
         
             for(u32 i = 0; i < render_context->pipeline_node_count; i++) {
                 const PipelineNode* pipeline_node = &render_context->pipeline_nodes[i];
-                //const RenderNodeType next_node_type = (i < render_context->pipeline_node_count) ? render_context->pipeline_nodes[i + 1].type : U32_MAX;
                 if(pipeline_node->type == RENDER_NODE_TYPE_GRAPHICS) {
                     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_node->pipeline);
                     vkCmdDraw(command_buffer, 3, 1, 0, 0);
@@ -757,6 +882,10 @@ i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callbac
 
     vkDeviceWaitIdle(vulkan_context->device);
 
+    if(render_context->host_resource_memory_map) {
+        vkUnmapMemory(vulkan_context->device, render_context->host_resource_memory);
+    }
+
     /* SYNC OBJECTS DESTROY */ {
         for(u32 i = 0; i < MAX_SWAPCHAIN_IMAGE_COUNT; i++) {
             vkDestroySemaphore(vulkan_context->device, sync_objects.image_submit_semaphores[i], NULL);
@@ -764,6 +893,7 @@ i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callbac
         vkDestroySemaphore(vulkan_context->device, sync_objects.image_available_semaphore, NULL);
         vkDestroySemaphore(vulkan_context->device, sync_objects.image_finished_semaphore, NULL);
         vkDestroyFence(vulkan_context->device, sync_objects.frame_fence, NULL);
+        vkDestroyFence(vulkan_context->device, sync_objects.transfer_fence, NULL);
         sync_objects = (SyncObjects){0};
     }
     
@@ -776,6 +906,9 @@ i32 renderCreateContext(const VulkanContext* vulkan_context, const RenderSetting
     if(!getSwapchainParams(vulkan_context->surface, vulkan_context->physical_device, vulkan_context->window, &render_context->swapchain_params)) {
         MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_SURFACE_STATS_NOT_SUITABLE, "vulkan surface stats not suitable");
     }
+
+    /* render update function */
+    render_context->update_callback = settings->update_callback;
 
     /* @(FIX): add comments */
     /* TARGETS ALLOCATION */ {
@@ -912,19 +1045,20 @@ i32 renderCreateContext(const VulkanContext* vulkan_context, const RenderSetting
 
         render_context->resource_node_count = 0;
         for(u32 i = 0; i < settings->binding_count; i++) {
-            const RenderBinding* binding = &settings->bindings[0];
+            const RenderBinding* binding = &settings->bindings[i];
             ResourceNode* node = &render_context->resource_nodes[render_context->resource_node_count];
 
             VkMemoryRequirements device_buffer_memory = (VkMemoryRequirements){0};
             VkMemoryRequirements host_buffer_memory = (VkMemoryRequirements){0};
 
-            /* skip none nodes */
-            if(binding->type == RENDER_BINDING_TYPE_NONE) continue;
             /* uniform buffer node */
             if(binding->type == RENDER_BINDING_TYPE_UNIFORM_BUFFER) {
                 *node = (ResourceNode) {
                     .type = RENDER_BINDING_TYPE_UNIFORM_BUFFER,
-                    .size = binding->size
+                    .size = binding->size,
+                    .init_batch = binding->initial_batch,
+                    .frame_batch = binding->frame_batch,
+                    .binding = binding->binding
                 };
 
                 /* if usage device only, should be no batches */    
@@ -985,12 +1119,18 @@ i32 renderCreateContext(const VulkanContext* vulkan_context, const RenderSetting
         if(render_context->resource_node_count == 0) goto _no_bindings;
 
         /* allocating memory on arena */
-        if(!(render_context->device_resource_memory = vramAllocate(&device_resource_requirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))) {
-            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_ALLOCATE_VRAM, "failed to allocate device resource memory");
+        if(device_resource_requirements.size != 0) {
+            if(!(render_context->device_resource_memory = vramAllocate(&device_resource_requirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))) {
+                MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_ALLOCATE_VRAM, "failed to allocate device resource memory");
+            }
         }
-        if(!(render_context->host_resource_memory = vramAllocate(&host_resource_requirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))) {
-            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_ALLOCATE_VRAM, "failed to allocate host resource memory");
+        if(host_resource_requirements.size != 0) {
+            if(!(render_context->host_resource_memory = vramAllocate(&host_resource_requirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, 0))) {
+                MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_ALLOCATE_VRAM, "failed to allocate host resource memory");
+            }
         }
+        render_context->device_resource_memory_size = device_resource_requirements.size;
+        render_context->host_resource_memory_size = host_resource_requirements.size;
 
         /* bind memory, no validation here */
         for(u32 i = 0; i < render_context->resource_node_count; i++) {

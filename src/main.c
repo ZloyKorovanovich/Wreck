@@ -22,9 +22,23 @@ b32 msgCallback(i32 msg_code, const char* msg) {
     return FALSE;
 }
 
+static float s_screen_x = 0.0;
+static float s_screen_y = 0.0;
+
+void renderUpdate(const RenderUpdateContext* render_context) {
+    s_screen_x = (float)render_context->screen_x;
+    s_screen_y = (float)render_context->screen_y;
+}
+
 void uniformBufferWrite(void* ptr) {
     *((UniformBuffer*)ptr) = (UniformBuffer) {
-        .screen_params = {1.0, 1.0, 0.0, 0.0}
+        .screen_params = {100.0 / s_screen_x, 100.0 / s_screen_y, 0.0, 0.0}
+    };
+}
+
+void uniformBuffer1Write(void* ptr) {
+    *((UniformBuffer*)ptr) = (UniformBuffer) {
+        .screen_params = {500.0 / s_screen_x, 500.0 / s_screen_y, 0.0, 0.0}
     };
 }
 
@@ -37,10 +51,19 @@ i32 main(i32 argc, char** argv) {
                 .type = RENDER_BINDING_TYPE_UNIFORM_BUFFER,
                 .usage = RENDER_BINDING_USAGE_HOST_DEVICE,
                 .size = sizeof(UniformBuffer),
-                .frame_batch = &uniformBufferWrite
+                .frame_batch = &uniformBufferWrite,
+                //.initial_batch = &uniformBufferWrite
+            },
+            (RenderBinding) {
+                .binding = 1, .set = 0, 
+                .type = RENDER_BINDING_TYPE_UNIFORM_BUFFER,
+                .usage = RENDER_BINDING_USAGE_HOST_DEVICE,
+                .size = sizeof(UniformBuffer),
+                .frame_batch = &uniformBuffer1Write,
+                //.initial_batch = &uniformBufferWrite
             }
         },
-        .binding_count = 1,
+        .binding_count = 2,
         .nodes = (RenderNode[]) {
             (RenderNode) {
                 .type = RENDER_NODE_TYPE_GRAPHICS,
@@ -53,7 +76,8 @@ i32 main(i32 argc, char** argv) {
                 .fragment_shader = "out/data/triangle_f.spv"
             }
         },
-        .node_count = 2
+        .node_count = 2,
+        .update_callback = &renderUpdate
     };
     /* fill everything */
     const VulkanInfo vulkan_info = {
@@ -61,12 +85,17 @@ i32 main(i32 argc, char** argv) {
         .name = "Wreck Demo",
         .x = 800,
         .y = 600,
-        .flags = VULKAN_FLAG_DEBUG | VULKAN_FLAG_WIN_RESIZE,
+        .flags = VULKAN_FLAG_WIN_RESIZE,
         .version = MAKE_VERSION(0, 1, 0),
         .render_settings = &render_settings
     };
     /* run vulkan rendering! */
     if(MSG_IS_ERROR(vulkanRun(&vulkan_info))) {
+        i32 a = 0;
+        while (1) {
+            a;
+        }
+        
         return -1;
     }
     return 0;

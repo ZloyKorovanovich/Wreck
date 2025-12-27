@@ -45,9 +45,9 @@ b32 vulkanCheckPhysicalDevice(VkPhysicalDevice device, const char** required_ext
 
     /* check basics */
     vkGetPhysicalDeviceProperties(device, &device_properties);
-    if(device_properties.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
+    /*if(device_properties.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
         return FALSE;
-    }
+    }*/
 
     /* MATCHING EXTENSIONS */ {
         VkExtensionProperties extension_properties[PHYSICAL_DEVICE_MAX_EXTENSIONS] = {0};
@@ -149,9 +149,8 @@ i32 vulkanCreateContext(const VulkanInfo* info, VulkanContext* context) {
             context_create_buffer->required_extension_names[i] = glfw_extension_names[i];
         }
         /* then add vk extensions that we need we use VK_EXT_DEBUG_UTILS_EXTENSION_NAME only if debug flag is on, but we will store pointer anyway */
-        context_create_buffer->required_extension_names[glfw_extension_count] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
-        context_create_buffer->required_extension_names[glfw_extension_count + 1] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
-        context_create_buffer->required_extension_name_count = (VULKAN_FLAG_DEBUG & info->flags) ? glfw_extension_count + 2 : glfw_extension_count + 1;
+        context_create_buffer->required_extension_names[glfw_extension_count] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+        context_create_buffer->required_extension_name_count = (VULKAN_FLAG_DEBUG & info->flags) ? glfw_extension_count + 1 : glfw_extension_count;
 
         /* now get instance extensions that are present */
         vkEnumerateInstanceExtensionProperties(NULL, &context_create_buffer->instance_extension_count, NULL);
@@ -167,6 +166,7 @@ i32 vulkanCreateContext(const VulkanInfo* info, VulkanContext* context) {
                     goto _found_instance_ext;
                 }
             }
+            printf("%s\n", context_create_buffer->required_extension_names[i]);
             //_not_found_instance_ext:
             MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_INSATNCE_EXTENSION_MISMATCH, "failed to match required extension to instance extensions");
             _found_instance_ext: {}
@@ -211,7 +211,7 @@ i32 vulkanCreateContext(const VulkanInfo* info, VulkanContext* context) {
 
         VkInstanceCreateInfo instance_info = {
             .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-            .flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR,
+            .flags = 0,
             .pApplicationInfo = &app_info,
             .ppEnabledExtensionNames = context_create_buffer->required_extension_names,
             .enabledExtensionCount = context_create_buffer->required_extension_name_count,

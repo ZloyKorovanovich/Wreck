@@ -114,7 +114,8 @@ typedef enum {
     MSG_CODE_ERROR_VK_BINDING_TYPE_INVALID = -2147483604,
     MSG_CODE_ERROR_VK_CREATE_RESOURCE = -2147483603,
     MSG_CODE_ERROR_VK_BIND_RESOURCE_MEMORY = -2147483602,
-    MSG_CODE_ERROR_VK_INIT_VRAM_ARENA = -2147483601
+    MSG_CODE_ERROR_VK_INIT_VRAM_ARENA = -2147483601,
+    MSG_CODE_ERROR_VK_MAP_MEMORY = -2147483600
 } MSG_CODES_VK;
 
 
@@ -131,7 +132,6 @@ typedef enum {
     RENDER_BINDING_USAGE_HOST_DEVICE = 2
 } RenderBindingUsage;
 
-typedef void (*RenderUpdate_pfn)(void);
 typedef void (*RenderMemoryWrite_pfn)(void* ptr);
 
 typedef struct {
@@ -160,6 +160,13 @@ typedef struct {
     const char* fragment_shader;
     const char* compute_shader;
 } RenderNode;
+
+typedef struct {
+    u32 screen_x;
+    u32 screen_y;
+} RenderUpdateContext;
+
+typedef void (*RenderUpdate_pfn)(const RenderUpdateContext* render_context);
 
 /* settings of render in vulkan */
 typedef struct {
