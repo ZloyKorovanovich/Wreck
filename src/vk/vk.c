@@ -373,10 +373,16 @@ i32 vulkanRun(const VulkanInfo* info) {
     if(MSG_IS_ERROR(vulkanCreateContext(info, &vulkan_context))) {
         MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_CREATE_CONTEXT, "failed to init vulkan");
     }
+    /* init vram arena */
+    if(MSG_IS_ERROR(vramInit(&vulkan_context))) {
+        MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_INIT_VRAM_ARENA, "failed to init vulkan");
+    }
     
     if(MSG_IS_ERROR(renderRun(&vulkan_context, info->render_settings, info->msg_callback))) {
         MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_RENDER_RUN, "failed to run render");
     }
+
+    vramTemrinate();
 
     /* dont forget to destroy vulkan objects */
     vulkanDeleteContext(&vulkan_context);

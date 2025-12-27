@@ -22,13 +22,24 @@ typedef struct {
 
 /* local Render node analog */
 typedef struct {
-    u32 type;
+    RenderNodeType type;
     VkPipeline pipeline;
     VkPipelineLayout pipeline_layout; /* is a sencond read-only reference to pipeline layout */
     VkShaderModule vertex_shader;
     VkShaderModule fragment_shader;
     VkShaderModule compute_shader;
 } PipelineNode;
+
+typedef struct {
+    RenderBindingType type;
+    void* host_resource;
+    void* device_resource;
+    u64 host_offset; /* offset in vram allocation */
+    u64 device_offset; /* offset in vram allocation */
+    RenderMemoryWrite_pfn init_batch;
+    RenderMemoryWrite_pfn frame_batch;
+    u64 size;
+} ResourceNode;
 
 /* local context available in scope of that file */
 typedef struct {
@@ -50,9 +61,13 @@ typedef struct {
     VkDescriptorSet descriptor_set;
     VkDescriptorSetLayout descriptor_set_layout;
     VkPipelineLayout pipeline_layout;
-    /* pipelines */
+    /* pipelines and resources */
     PipelineNode* pipeline_nodes;
+    ResourceNode* resource_nodes;
     u32 pipeline_node_count;
+    u32 resource_node_count;
+    VkDeviceMemory device_resource_memory;
+    VkDeviceMemory host_resource_memory;
 } RenderContext;
 
 
@@ -84,11 +99,29 @@ VkShaderModule createShaderModule(VkDevice device, const char* shader_path, Byte
         .pCode = (u32*)read_buffer->buffer,
         .codeSize = shader_size
     };
-    if(vkCreateShaderModule(device, &shader_module_info, NULL, &shader_module)) {
+    if(vkCreateShaderModule(device, &shader_module_info, NULL, &shader_module) != VK_SUCCESS) {
         return NULL;
     }
     return shader_module;
 }
+
+/*@(FIX): add comments*/
+VkBuffer createBuffer(VkDevice device, u64 size, u32 queue_family, u32 usage) {
+    VkBuffer buffer = NULL;
+    VkBufferCreateInfo buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .usage = usage,
+        .size = size,
+        .pQueueFamilyIndices = &queue_family,
+        .queueFamilyIndexCount = 1,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    if(vkCreateBuffer(device, &buffer_info, NULL, &buffer) != VK_SUCCESS) {
+        return NULL;
+    }
+    return buffer;
+}
+
 
 /* modiffies pipeline nodes */
 b32 createGraphicsPipeline(VkDevice device, VkFormat color_format, VkFormat depth_format, PipelineNode* node) {
@@ -442,7 +475,6 @@ i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callbac
     SyncObjects sync_objects = (SyncObjects){0};
     VkCommandBuffer command_buffer = NULL;
 
-
     /* COMMAND BUFFER */ {
         VkCommandBufferAllocateInfo cmbuffers_info = (VkCommandBufferAllocateInfo) {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -509,6 +541,55 @@ i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callbac
                 .layerCount = 1,
             }
         };
+    }
+
+    /* @(FIX): add comments */
+    /* UPDATE DESCRIPTORS */ {
+        typedef struct {
+            VkWriteDescriptorSet write_sets[MAX_DESCRIPTOR_BINDING_COUNT];
+            VkDescriptorBufferInfo buffer_infos[MAX_DESCRIPTOR_BINDING_COUNT];
+            u32 write_set_count;
+            u32 buffer_info_count;
+        } ResourceDescriptorWriteBuffer;
+
+        if(render_context->resource_node_count == 0) goto _skip_descriptors;
+
+        ResourceDescriptorWriteBuffer* resource_descriptor_write = malloc(sizeof(ResourceDescriptorWriteBuffer));
+        if(!resource_descriptor_write) {
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL, "failed to allocate descriptor buffer info array");
+        }
+        *resource_descriptor_write = (ResourceDescriptorWriteBuffer){0};
+
+        for(u32 i = 0; i < render_context->resource_node_count; i++) {
+            const ResourceNode* resource_node = &render_context->resource_nodes[i];
+            if(resource_node->type == RENDER_BINDING_TYPE_UNIFORM_BUFFER) {
+                resource_descriptor_write->buffer_infos[resource_descriptor_write->buffer_info_count] = (VkDescriptorBufferInfo) {
+                    .buffer = resource_node->device_resource,
+                    .offset = 0,
+                    .range = resource_node->size
+                };
+                resource_descriptor_write->write_sets[resource_descriptor_write->write_set_count] = (VkWriteDescriptorSet) {
+                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .dstSet = render_context->descriptor_set,
+                    .dstBinding = 0,
+                    .dstArrayElement = 0,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                    .descriptorCount = 1,
+                    .pBufferInfo = &resource_descriptor_write->buffer_infos[resource_descriptor_write->buffer_info_count],
+                    .pImageInfo = NULL,
+                    .pTexelBufferView = NULL
+                };
+                resource_descriptor_write->buffer_info_count++;
+                resource_descriptor_write->write_set_count++;
+                continue;
+            }
+
+            /* @(FIX): add different render binding types */
+        }
+        vkUpdateDescriptorSets(vulkan_context->device, resource_descriptor_write->write_set_count, resource_descriptor_write->write_sets, 0, NULL);
+
+        free(resource_descriptor_write);
+        _skip_descriptors: {}
     }
 
     /* render loop itself */
@@ -622,7 +703,7 @@ i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callbac
         
             for(u32 i = 0; i < render_context->pipeline_node_count; i++) {
                 const PipelineNode* pipeline_node = &render_context->pipeline_nodes[i];
-                const u32 next_node_type = (i < render_context->pipeline_node_count) ? render_context->pipeline_nodes[i + 1].type : U32_MAX;
+                //const RenderNodeType next_node_type = (i < render_context->pipeline_node_count) ? render_context->pipeline_nodes[i + 1].type : U32_MAX;
                 if(pipeline_node->type == RENDER_NODE_TYPE_GRAPHICS) {
                     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_node->pipeline);
                     vkCmdDraw(command_buffer, 3, 1, 0, 0);
@@ -696,7 +777,8 @@ i32 renderCreateContext(const VulkanContext* vulkan_context, const RenderSetting
         MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_SURFACE_STATS_NOT_SUITABLE, "vulkan surface stats not suitable");
     }
 
-    /* ALLOCATIONS */ {
+    /* @(FIX): add comments */
+    /* TARGETS ALLOCATION */ {
         /* get max possible screen resolution, in order to make a constant allocation that can be reused in any case */
         const GLFWvidmode* video_mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
 
@@ -724,30 +806,8 @@ i32 renderCreateContext(const VulkanContext* vulkan_context, const RenderSetting
         VkMemoryRequirements depth_prototype_memory = (VkMemoryRequirements){0};
         vkGetImageMemoryRequirements(vulkan_context->device, depth_prototype, &depth_prototype_memory);
 
-        /* allocate vram memory for prototypes */
-        VkMemoryAllocateInfo targets_allocation_info = {
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .allocationSize = depth_prototype_memory.size,
-            .memoryTypeIndex = 0xffffffff
-        };
-        /* find suitable memory type */
-        /* @(FIX): gpu memory allocation should be tracked, so its reasonable to put into some other file */
-        VkPhysicalDeviceMemoryProperties memory_properties = (VkPhysicalDeviceMemoryProperties){0};
-        vkGetPhysicalDeviceMemoryProperties(vulkan_context->physical_device, &memory_properties);
-        for(u32 i = 0; i < memory_properties.memoryTypeCount; i++) {
-            VkMemoryType memory_type = memory_properties.memoryTypes[i];
-            if(
-                (memory_type.propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) && 
-                !(memory_type.propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
-                (memory_type.propertyFlags & depth_prototype_memory.memoryTypeBits) &&
-                memory_properties.memoryHeaps[memory_type.heapIndex].size > depth_prototype_memory.size
-            ) {
-                targets_allocation_info.memoryTypeIndex = i;
-            }
-        }
-        /* allocation call */
-        if(vkAllocateMemory(vulkan_context->device, &targets_allocation_info, NULL, &render_context->targets_allocation) != VK_SUCCESS) {
-            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_ALLOCATE_VRAM, "failed to allocate vram");
+        if(!(render_context->targets_allocation = vramAllocate(&depth_prototype_memory, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))) {
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_ALLOCATE_VRAM, "failed to allocate memory for depth image");
         }
         /* dont forget to delete prototypes */
         vkDestroyImage(vulkan_context->device, depth_prototype, NULL);
@@ -780,7 +840,7 @@ i32 renderCreateContext(const VulkanContext* vulkan_context, const RenderSetting
         }
 
         /* if settings are null then nobody specified bindings */
-        if(settings) {
+        if(settings && settings->binding_count != 0) {
             /* allocate descriptor binding array */
             VkDescriptorSetLayoutBinding descriptor_bindings[MAX_DESCRIPTOR_BINDING_COUNT] = {0};
             if(settings->binding_count > MAX_DESCRIPTOR_BINDING_COUNT) {
@@ -838,6 +898,120 @@ i32 renderCreateContext(const VulkanContext* vulkan_context, const RenderSetting
         }
     }
 
+    /* @(FIX): simplify, add comments */
+    /* RESOURCE NODES */ {
+        if(!settings) goto _no_bindings;
+        if(settings->binding_count == 0) goto _no_bindings;
+
+        if(!(render_context->resource_nodes = malloc(sizeof(ResourceNode) * settings->binding_count))) {
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL, "failed to allocate resource nodes buffer");
+        }
+
+        VkMemoryRequirements host_resource_requirements = (VkMemoryRequirements){.memoryTypeBits = U32_MAX};
+        VkMemoryRequirements device_resource_requirements = (VkMemoryRequirements){.memoryTypeBits = U32_MAX};
+
+        render_context->resource_node_count = 0;
+        for(u32 i = 0; i < settings->binding_count; i++) {
+            const RenderBinding* binding = &settings->bindings[0];
+            ResourceNode* node = &render_context->resource_nodes[render_context->resource_node_count];
+
+            VkMemoryRequirements device_buffer_memory = (VkMemoryRequirements){0};
+            VkMemoryRequirements host_buffer_memory = (VkMemoryRequirements){0};
+
+            /* skip none nodes */
+            if(binding->type == RENDER_BINDING_TYPE_NONE) continue;
+            /* uniform buffer node */
+            if(binding->type == RENDER_BINDING_TYPE_UNIFORM_BUFFER) {
+                *node = (ResourceNode) {
+                    .type = RENDER_BINDING_TYPE_UNIFORM_BUFFER,
+                    .size = binding->size
+                };
+
+                /* if usage device only, should be no batches */    
+                if(binding->usage == RENDER_BINDING_USAGE_DEVICE_ONLY) {
+                    /* batch validation */
+                    if(binding->initial_batch || binding->frame_batch) {
+                        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BINDING_USAGE_INVALID, "can not use memory write batches for device only buffers");
+                    }
+                    /* create buffer */
+                    if(!(node->device_resource = createBuffer(vulkan_context->device, binding->size, vulkan_context->render_family_id, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT))) {
+                        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_RESOURCE, "failed to create device uniform buffer");
+                    }
+                    /* adjust memory requirements */
+                    vkGetBufferMemoryRequirements(vulkan_context->device, (VkBuffer)node->device_resource, &device_buffer_memory);
+                    device_resource_requirements.memoryTypeBits &= device_buffer_memory.memoryTypeBits;
+                    device_resource_requirements.alignment = MAX(device_resource_requirements.alignment, device_buffer_memory.alignment);
+                    node->device_offset = ALIGN(device_resource_requirements.size, device_buffer_memory.alignment); /* dont forget to set offset */
+                    device_resource_requirements.size = node->device_offset + device_buffer_memory.size;
+                }
+                /* if usage device and host, batches required */ 
+                else if(binding->usage == RENDER_BINDING_USAGE_HOST_DEVICE) {
+                    /* batch validation */
+                    if(!binding->initial_batch && !binding->frame_batch) {
+                        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BINDING_USAGE_INVALID, "neither initial batch nor frame batch are speciffied, but usage is host device");
+                    } 
+                    /* create buffer on device */
+                    if(!(node->device_resource = createBuffer(vulkan_context->device, binding->size, vulkan_context->render_family_id, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT))) {
+                        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_RESOURCE, "failed to create device uniform buffer");
+                    }
+                    /* create buffer on host */
+                    if(!(node->host_resource = createBuffer(vulkan_context->device, binding->size, vulkan_context->render_family_id, VK_BUFFER_USAGE_TRANSFER_SRC_BIT))) {
+                        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_RESOURCE, "failed to create host uniform buffer");
+                    }
+                    /* adjust device memory requirements */
+                    vkGetBufferMemoryRequirements(vulkan_context->device, (VkBuffer)node->device_resource, &device_buffer_memory);
+                    device_resource_requirements.alignment = MAX(device_resource_requirements.alignment, device_buffer_memory.alignment);
+                    device_resource_requirements.memoryTypeBits &= device_buffer_memory.memoryTypeBits;
+                    node->device_offset = ALIGN(device_resource_requirements.size, device_buffer_memory.alignment); /* dont forget to set offset */
+                    device_resource_requirements.size = node->device_offset + device_buffer_memory.size;
+                    /* adjust host memory requirements */
+                    vkGetBufferMemoryRequirements(vulkan_context->device, (VkBuffer)node->host_resource, &host_buffer_memory);
+                    host_resource_requirements.memoryTypeBits &= host_buffer_memory.memoryTypeBits;
+                    host_resource_requirements.alignment = MAX(host_resource_requirements.alignment, host_buffer_memory.alignment);
+                    node->host_offset = ALIGN(host_resource_requirements.size, host_buffer_memory.alignment); /* dont forget to set offset */
+                    host_resource_requirements.size = node->host_offset + host_buffer_memory.size;
+                }
+                /* usage unspecified */
+                else {
+                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BINDING_USAGE_INVALID, "render binding usage unspecified");
+                }
+
+                render_context->resource_node_count++;
+                continue;
+            }
+
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BINDING_TYPE_INVALID, "render binding usage unspecified");
+        }
+        if(render_context->resource_node_count == 0) goto _no_bindings;
+
+        /* allocating memory on arena */
+        if(!(render_context->device_resource_memory = vramAllocate(&device_resource_requirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))) {
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_ALLOCATE_VRAM, "failed to allocate device resource memory");
+        }
+        if(!(render_context->host_resource_memory = vramAllocate(&host_resource_requirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))) {
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_ALLOCATE_VRAM, "failed to allocate host resource memory");
+        }
+
+        /* bind memory, no validation here */
+        for(u32 i = 0; i < render_context->resource_node_count; i++) {
+            const ResourceNode* resource_node = &render_context->resource_nodes[i];
+            if(resource_node->type == RENDER_BINDING_TYPE_UNIFORM_BUFFER || resource_node->type == RENDER_BIDNING_TYPE_STORAGE_BUFFER) {
+                if(resource_node->host_resource) {
+                    if(vkBindBufferMemory(vulkan_context->device, (VkBuffer)resource_node->host_resource, render_context->host_resource_memory, resource_node->host_offset) != VK_SUCCESS) {
+                        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BIND_RESOURCE_MEMORY, "failed to bind host buffer to memory");
+                    }
+                }
+                if(resource_node->host_resource) {
+                    if(vkBindBufferMemory(vulkan_context->device, (VkBuffer)resource_node->device_resource, render_context->device_resource_memory, resource_node->device_offset) != VK_SUCCESS) {
+                        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BIND_RESOURCE_MEMORY, "failed to bind device buffer to memory");
+                    }
+                }
+            }
+        }
+
+        _no_bindings: {}
+    }
+
     /* PIPELINE NODES */ {
         /* @(FIX): weird way of handling settings dont exist */
         if(!settings) goto _no_shaders; 
@@ -856,16 +1030,19 @@ i32 renderCreateContext(const VulkanContext* vulkan_context, const RenderSetting
             MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL, "failed to allocate pipeline nodes buffer");
         }
 
+        /* transform render nodes to pipeline nodes and validate them */
         render_context->pipeline_node_count = 0;
-        /* transform render nodes to pipeline nodes */
         for(u32 i = 0; i < settings->node_count; i++) {
             const RenderNode* node = &settings->nodes[i];
-            PipelineNode* pipeline_node = &render_context->pipeline_nodes[render_context->pipeline_node_count++];
+            PipelineNode* pipeline_node = &render_context->pipeline_nodes[render_context->pipeline_node_count];
             /* none nodes are just skipped */
             if(node->type == RENDER_NODE_TYPE_NONE) continue;
             /* if graphics node */
             if(node->type == RENDER_NODE_TYPE_GRAPHICS) {
-                *pipeline_node = (PipelineNode) {.type = RENDER_NODE_TYPE_GRAPHICS, .pipeline_layout = render_context->pipeline_layout};
+                *pipeline_node = (PipelineNode) {
+                    .type = RENDER_NODE_TYPE_GRAPHICS,
+                    .pipeline_layout = render_context->pipeline_layout
+                };
                 /* validate shader types */
                 if(!node->vertex_shader || !node->fragment_shader || node->compute_shader) {
                     MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RENDER_NODE_INVALID_SHADERS, "invalid shaders in graphics render node");
@@ -881,7 +1058,7 @@ i32 renderCreateContext(const VulkanContext* vulkan_context, const RenderSetting
                 if(!createGraphicsPipeline(vulkan_context->device, render_context->swapchain_params.surface_format.format, render_context->swapchain_params.depth_format, pipeline_node)) {
                     MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_PIPELINE_CREATE, "failed to create graphics pipeline");
                 }
-
+                render_context->pipeline_node_count++;
                 continue;
             }
             MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_INVALID_RENDER_NODE_TYPE, "invalid render node type detected");
@@ -911,7 +1088,10 @@ void renderDestroyContext(const VulkanContext* vulkan_context, RenderContext* re
         vkDestroyCommandPool(vulkan_context->device, render_context->command_pool, NULL);
     }
 
+    /* @(FIX): add comments */
     /* PIPELINE NODES */ {
+        if(render_context->pipeline_node_count == 0) goto _skip_pipeline_nodes;
+
         for(u32 i = 0; i < render_context->pipeline_node_count; i++) {
             if(render_context->pipeline_nodes[i].type == RENDER_NODE_TYPE_GRAPHICS) {
                 vkDestroyPipeline(vulkan_context->device, render_context->pipeline_nodes[i].pipeline, NULL);
@@ -924,6 +1104,29 @@ void renderDestroyContext(const VulkanContext* vulkan_context, RenderContext* re
             }
         }
         free(render_context->pipeline_nodes);
+
+        _skip_pipeline_nodes: {}
+    }
+
+    /* @(FIX): add comments */
+    /* RESOURCE NODES */ {
+        if(render_context->resource_node_count == 0) goto _skip_resource_nodes;
+
+        const u32 resource_node_count = render_context->resource_node_count;
+        for(u32 i = 0; i < resource_node_count; i++) {
+            ResourceNode* resource = &render_context->resource_nodes[i];
+            if(resource->type == RENDER_BINDING_TYPE_UNIFORM_BUFFER || resource->type == RENDER_BIDNING_TYPE_STORAGE_BUFFER) {
+                if(resource->host_resource) {
+                    vkDestroyBuffer(vulkan_context->device, (VkBuffer)resource->host_resource, NULL);
+                }
+                if(resource->device_resource) {
+                    vkDestroyBuffer(vulkan_context->device, (VkBuffer)resource->device_resource, NULL);
+                }
+            }
+        }
+        free(render_context->resource_nodes);
+
+        _skip_resource_nodes: {}
     }
 
     /* DESCRIPTORS */ {
@@ -942,11 +1145,6 @@ void renderDestroyContext(const VulkanContext* vulkan_context, RenderContext* re
         }
         vkDestroyImageView(vulkan_context->device, render_context->depth_view, NULL);
         vkDestroyImage(vulkan_context->device, render_context->depth_image, NULL);
-    }
-
-    /* ALLOCATIONS */ {
-        /* @(FIX) should be done by different module that manages memory */
-        vkFreeMemory(vulkan_context->device, render_context->targets_allocation, NULL);
     }
 
     vkDestroySwapchainKHR(vulkan_context->device, render_context->swapchain, NULL);

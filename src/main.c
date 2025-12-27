@@ -1,6 +1,10 @@
 #include "main.h"
 #include "vk/vk.h"
 
+typedef struct {
+    f32 screen_params[4];
+} UniformBuffer;
+
 b32 msgCallback(i32 msg_code, const char* msg) {
     /* if message is error we stop */
     if(MSG_IS_ERROR(msg_code)) {
@@ -18,10 +22,23 @@ b32 msgCallback(i32 msg_code, const char* msg) {
     return FALSE;
 }
 
+void uniformBufferWrite(void* ptr) {
+    *((UniformBuffer*)ptr) = (UniformBuffer) {
+        .screen_params = {1.0, 1.0, 0.0, 0.0}
+    };
+}
+
+
 i32 main(i32 argc, char** argv) {
     const RenderSettings render_settings = {
         .bindings = (RenderBinding[]){ 
-            (RenderBinding) {0, 0, RENDER_BINDING_TYPE_UNIFORM_BUFFER}
+            (RenderBinding) {
+                .binding = 0, .set = 0, 
+                .type = RENDER_BINDING_TYPE_UNIFORM_BUFFER,
+                .usage = RENDER_BINDING_USAGE_HOST_DEVICE,
+                .size = sizeof(UniformBuffer),
+                .frame_batch = &uniformBufferWrite
+            }
         },
         .binding_count = 1,
         .nodes = (RenderNode[]) {
@@ -33,7 +50,7 @@ i32 main(i32 argc, char** argv) {
             (RenderNode) {
                 .type = RENDER_NODE_TYPE_GRAPHICS,
                 .vertex_shader = "out/data/triangle_flip_v.spv",
-                .fragment_shader = "out/data/triangle_flip_f.spv"
+                .fragment_shader = "out/data/triangle_f.spv"
             }
         },
         .node_count = 2

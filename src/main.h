@@ -31,6 +31,7 @@ typedef unsigned b32;
 #define MAX(a, b) (a > b ? a : b)
 #define CLAMP(a, b, t) ((t < a) ? a : (t > b) ? b : t)
 
+#define ALIGN(ptr, alig) ((ptr + (alig - 1)) & ~(alig - 1))
 
 typedef struct {
     u8* buffer;
@@ -107,37 +108,53 @@ typedef enum {
     MSG_CODE_ERROR_VK_INVALID_RENDER_NODE_TYPE = -2147483610,
     MSG_CODE_ERROR_VK_PIPELINE_CREATE = -2147483609,
     MSG_CODE_ERROR_VK_SWAPCHAIN_RECREATE = -2147483608,
-    MSG_CODE_ERROR_VK_RESIZE_FAIL = -2147483607
+    MSG_CODE_ERROR_VK_RESIZE_FAIL = -2147483607,
+    MSG_CODE_ERROR_VK_BUFFER_CREATE = -2147483606,
+    MSG_CODE_ERROR_VK_BINDING_USAGE_INVALID = -2147483605,
+    MSG_CODE_ERROR_VK_BINDING_TYPE_INVALID = -2147483604,
+    MSG_CODE_ERROR_VK_CREATE_RESOURCE = -2147483603,
+    MSG_CODE_ERROR_VK_BIND_RESOURCE_MEMORY = -2147483602,
+    MSG_CODE_ERROR_VK_INIT_VRAM_ARENA = -2147483601
 } MSG_CODES_VK;
 
-/* Used by vulkan info struct, affects vulkan instance and glfw creation.
-If you want to use render doc, make sure DEBUG flag is not set!  */
-typedef enum {
-    VULKAN_FLAG_DEBUG = 0x1, /* enables vulkan validation layers, if not present a error will appear */
-    VULKAN_FLAG_WIN_RESIZE = 0x2 /* makes resizable window useful in windowed mode */
-} VULKAN_FLAGS;
 
 /* indentifies type of binding in shader */
 typedef enum {
     RENDER_BINDING_TYPE_NONE = 0,
     RENDER_BINDING_TYPE_UNIFORM_BUFFER = 1,
     RENDER_BIDNING_TYPE_STORAGE_BUFFER = 2
-} RENDER_BINDING_TYPES;
+} RenderBindingType;
+
+typedef enum {
+    RENDER_BINDING_USAGE_NONE = 0,
+    RENDER_BINDING_USAGE_DEVICE_ONLY = 1,
+    RENDER_BINDING_USAGE_HOST_DEVICE = 2
+} RenderBindingUsage;
+
+typedef void (*RenderUpdate_pfn)(void);
+typedef void (*RenderMemoryWrite_pfn)(void* ptr);
 
 typedef struct {
     u32 binding;
-    u32 descriptor_set;
-    u32 type;
+    u32 set;
+    RenderBindingType type;
+    RenderBindingUsage usage;
+    u64 size;
+    RenderMemoryWrite_pfn initial_batch;
+    RenderMemoryWrite_pfn frame_batch;
 } RenderBinding;
 
+
+/* types of render nodes affects which shaders will be used */
 typedef enum {
     RENDER_NODE_TYPE_NONE = 0,
     RENDER_NODE_TYPE_GRAPHICS = 1,
     RENDER_NODE_TYPE_COMPUTE = 2
-} RENDER_NODE_TYPES;
+} RenderNodeType;
 
+/* describes render node, in other words render pipeline */
 typedef struct {
-    u32 type;
+    RenderNodeType type;
     u32 layout_set_id;
     const char* vertex_shader;
     const char* fragment_shader;
@@ -147,10 +164,19 @@ typedef struct {
 /* settings of render in vulkan */
 typedef struct {
     const RenderBinding* bindings;
-    u32 binding_count;
     const RenderNode* nodes;
+    u32 binding_count;
     u32 node_count;
+    RenderUpdate_pfn update_callback;
 } RenderSettings;
+
+
+/* Used by vulkan info struct, affects vulkan instance and glfw creation.
+If you want to use render doc, make sure DEBUG flag is not set!  */
+typedef enum {
+    VULKAN_FLAG_DEBUG = 0x1, /* enables vulkan validation layers, if not present a error will appear */
+    VULKAN_FLAG_WIN_RESIZE = 0x2 /* makes resizable window useful in windowed mode */
+} VulkanFlags;
 
 /* Used by vulkanRun function, provides necessary information for initialization
 and runtime of this function.   */
@@ -159,7 +185,7 @@ typedef struct {
     const char* name;
     u32 x; /* width of window in pixels, not used if fullscreen*/
     u32 y; /* heigh of window in pixels, not used if fullscreen*/
-    u32 flags; /* VULKAN_FLAGS value, determines intialization flags */
+    VulkanFlags flags; /* VulkanFlags value, determines intialization flags */
     u32 version; /* informs vulkan about your app version */
     /* settings */
     const RenderSettings* render_settings; /* leave as null if not used */

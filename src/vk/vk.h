@@ -32,5 +32,13 @@ typedef struct {
 
 i32 renderRun(const VulkanContext* vulkan_context, const RenderSettings* settings, msg_callback_pfn msg_callback);
 
+
+/* creates vram arena */
+i32 vramInit(const VulkanContext* vulkan_context);
+/* destroys vram arena */
+void vramTemrinate(void);
+/* allocate on vram arena */
+VkDeviceMemory vramAllocate(const VkMemoryRequirements* requirements, u32 positive_flags, u32 negative_flags);
+
 #endif
 
