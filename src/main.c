@@ -85,17 +85,12 @@ i32 main(i32 argc, char** argv) {
         .name = "Wreck Demo",
         .x = 800,
         .y = 600,
-        .flags = VULKAN_FLAG_WIN_RESIZE,
+        .flags = VULKAN_FLAG_WIN_RESIZE | VULKAN_FLAG_DEBUG,
         .version = MAKE_VERSION(0, 1, 0),
         .render_settings = &render_settings
     };
     /* run vulkan rendering! */
     if(MSG_IS_ERROR(vulkanRun(&vulkan_info))) {
-        i32 a = 0;
-        while (1) {
-            a;
-        }
-        
         return -1;
     }
     return 0;

@@ -45,6 +45,7 @@ b32 vulkanCheckPhysicalDevice(VkPhysicalDevice device, const char** required_ext
 
     /* check basics */
     vkGetPhysicalDeviceProperties(device, &device_properties);
+    /* @(FIX): add proper integrated gpu support */
     /*if(device_properties.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
         return FALSE;
     }*/

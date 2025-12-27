@@ -263,7 +263,9 @@ b32 getSwapchainParams(VkSurfaceKHR surface, VkPhysicalDevice device, GLFWwindow
         u32 format_count = 0;
         vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &format_count, NULL);
         format_count = MIN(format_count, MAX_SURFACE_FORMATS_COUNT);
-        if(format_count == 0) return FALSE;
+        if(format_count == 0) {
+            return FALSE;
+        }
         vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &format_count, surface_formats);
 
         /* find best surface format */
@@ -274,6 +276,7 @@ b32 getSwapchainParams(VkSurfaceKHR surface, VkPhysicalDevice device, GLFWwindow
                     VK_FORMAT_B8G8R8A8_SRGB,
                     VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
                 };
+                break;
             }
         }
     }   
@@ -336,7 +339,7 @@ i32 renderCreateSwapchain(const VulkanContext* vulkan_context, msg_callback_pfn 
 
     /* COLOR */ {
         /* create swapchain based on selected params*/
-        VkSwapchainCreateInfoKHR swapchain_info = {
+        const VkSwapchainCreateInfoKHR swapchain_info = {
             .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
             .surface = vulkan_context->surface,
             .minImageCount = render_context->swapchain_params.min_image_count,
@@ -949,7 +952,7 @@ i32 renderCreateContext(const VulkanContext* vulkan_context, const RenderSetting
 
     /* create swapchain and depth texture */
     if(MSG_IS_ERROR(renderCreateSwapchain(vulkan_context, msg_callback, render_context))) {
-        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_SWAPCHAIN_CREATE, "vulkan surface stats not suitable");
+        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_SWAPCHAIN_CREATE, "vulkan failed to create swapchain");
     }
 
     /* DESCRIPTORS */ {
