@@ -499,7 +499,8 @@ i32 createBindingContext(const VulkanContext* vulkan_context, const RenderSettin
                     .binding = setting_binding->binding,
                     .set = setting_binding->set,
                     .init_batch = setting_binding->initial_batch,
-                    .frame_batch = setting_binding->frame_batch
+                    .frame_batch = setting_binding->frame_batch,
+                    .size = setting_binding->size
                 };
                 if(vulkan_context->device_type == DEVICE_TYPE_DESCRETE) {
                     /* check for host side mutability */
@@ -541,7 +542,6 @@ i32 createBindingContext(const VulkanContext* vulkan_context, const RenderSettin
                 }
                 /* set data to render binding */
                 internal_binding->device_offset = ALIGN(device_memory_requirements.size, requirements.alignment);
-                internal_binding->size = setting_binding->size;
                 /* adjust allocation requirement */
                 device_memory_requirements.size = internal_binding->device_offset + requirements.size;
                 device_memory_requirements.alignment = MAX(device_memory_requirements.alignment, requirements.alignment);
@@ -555,8 +555,7 @@ i32 createBindingContext(const VulkanContext* vulkan_context, const RenderSettin
                     vkGetBufferMemoryRequirements(vulkan_context->device, (VkBuffer)internal_binding->host_resource, &requirements);
                 }
                 /* set data to render binding */
-                internal_binding->device_offset = ALIGN(host_memory_requirements.size, requirements.alignment);
-                internal_binding->size = setting_binding->size;
+                internal_binding->host_offset = ALIGN(host_memory_requirements.size, requirements.alignment);
                 /* adjust allocation requirement */
                 host_memory_requirements.size = internal_binding->device_offset + requirements.size;
                 host_memory_requirements.alignment = MAX(host_memory_requirements.alignment, requirements.alignment);
@@ -617,7 +616,7 @@ void destroyBindingContext(const VulkanContext* vulkan_context, RenderBindingCon
                 vkDestroyBuffer(vulkan_context->device, (VkBuffer)render_binding->device_resource, NULL);
             }
             if(render_binding->host_resource) {
-                vkDestroyBuffer(vulkan_context->device, (VkBuffer)render_binding->host_offset, NULL);
+                vkDestroyBuffer(vulkan_context->device, (VkBuffer)render_binding->host_resource, NULL);
             }
         }
     }
