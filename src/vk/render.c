@@ -1,8 +1,8 @@
 #include "vk.h"
 
 #define MAX_SWAPCHAIN_IMAGE_COUNT 8
-#define MAX_DESCRIPTOR_SETS 16
-#define MAX_DESCRIPTOR_BINDING_COUNT 32
+#define MAX_DESCRIPTOR_SET_COUNT 16
+#define MAX_BINDING_COUNT 32
 
 #define SHADER_VERTEX_ENTRY "vertexMain"
 #define SHADER_FRAGMENT_ENTRY "fragmentMain"
@@ -28,10 +28,12 @@ typedef struct {
     VkShaderModule vertex_shader;
     VkShaderModule fragment_shader;
     VkShaderModule compute_shader;
-} PipelineNode;
+} RenderNodeInternal;
 
 typedef struct {
     RenderBindingType type;
+    u32 binding;
+    u32 set;
     void* host_resource;
     void* device_resource;
     u64 host_offset; /* offset in vram allocation */
@@ -39,8 +41,29 @@ typedef struct {
     RenderMemoryWrite_pfn init_batch;
     RenderMemoryWrite_pfn frame_batch;
     u64 size;
-    u32 binding;
-} ResourceNode;
+} RenderBindingInternal;
+
+typedef struct {
+    VkDescriptorPool descirptor_pool;
+    u32 descriptor_set_count;
+    u32 render_binding_count;
+    /* special layouts */
+    VkDescriptorSetLayout empty_set_layout;
+    VkPipelineLayout empty_pipeline_layout;
+    VkPipelineLayout full_pipeline_layout;
+    /* vram allocations */
+    VkDeviceMemory host_memory_allocation;
+    VkDeviceMemory device_memory_allocation;
+    /* descriptor sets */
+    VkDescriptorSet desciptor_sets[MAX_DESCRIPTOR_SET_COUNT];
+    VkDescriptorSetLayout descriptor_layouts[MAX_DESCRIPTOR_SET_COUNT];
+    RenderBindingInternal render_bindings[MAX_DESCRIPTOR_SET_COUNT * MAX_BINDING_COUNT];
+} RenderBindingContext;
+
+typedef struct {
+    RenderNodeInternal* render_nodes; /* allocated on heap */
+    u32 render_nodes_count;
+} RenderExecuteContext;
 
 /* local context available in scope of that file */
 typedef struct {
@@ -58,21 +81,8 @@ typedef struct {
     /* commands */
     VkCommandPool command_pool;
     /* descriptors */
-    VkDescriptorPool descirptor_pool;
-    VkDescriptorSet descriptor_set;
-    VkDescriptorSetLayout descriptor_set_layout;
-    VkPipelineLayout pipeline_layout;
-    /* pipelines and resources */
-    PipelineNode* pipeline_nodes;
-    ResourceNode* resource_nodes;
-    u32 pipeline_node_count;
-    u32 resource_node_count;
-    VkDeviceMemory device_resource_memory;
-    VkDeviceMemory host_resource_memory;
-    u64 device_resource_memory_size;
-    u64 host_resource_memory_size;
-    void* host_resource_memory_map;
-    RenderUpdate_pfn update_callback;
+    RenderBindingContext* binding_context;
+    RenderExecuteContext* execute_context;
 } RenderContext;
 
 
@@ -111,26 +121,8 @@ VkShaderModule createShaderModule(VkDevice device, const char* shader_path, Byte
     return shader_module;
 }
 
-/*@(FIX): add comments*/
-VkBuffer createBuffer(VkDevice device, u64 size, u32 queue_family, u32 usage) {
-    VkBuffer buffer = NULL;
-    VkBufferCreateInfo buffer_info = {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .usage = usage,
-        .size = size,
-        .pQueueFamilyIndices = &queue_family,
-        .queueFamilyIndexCount = 1,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-    };
-    if(vkCreateBuffer(device, &buffer_info, NULL, &buffer) != VK_SUCCESS) {
-        return NULL;
-    }
-    return buffer;
-}
-
-
 /* modiffies pipeline nodes */
-b32 createGraphicsPipeline(VkDevice device, VkFormat color_format, VkFormat depth_format, PipelineNode* node) {
+b32 createGraphicsPipeline(VkDevice device, VkFormat color_format, VkFormat depth_format, RenderNodeInternal* node) {
     /* shader descriptors array */
     VkPipelineShaderStageCreateInfo shader_stages[2] = {
         (VkPipelineShaderStageCreateInfo) {
@@ -253,6 +245,401 @@ b32 createGraphicsPipeline(VkDevice device, VkFormat color_format, VkFormat dept
     return TRUE;
 }
 
+i32 createExecuteContext(const VulkanContext* vulkan_context, const RenderSettings* settings, const RenderContext* render_context, MsgCallback_pfn msg_callback, RenderExecuteContext* execute_context) {
+    *execute_context = (RenderExecuteContext){0};
+
+    if(!settings || settings->node_count == 0) {
+        return MSG_CODE_SUCCESS;
+    }
+
+    /* VALIDATION */ {
+        const u32 node_count = settings->node_count;
+        for(u32 i = 0; i < node_count; i++) {
+            const RenderNode* node = &settings->nodes[i];
+            /* validate types and shaders */
+            if(node->type == RENDER_NODE_TYPE_GRAPHICS) {
+                if(!node->vertex_shader || !node->fragment_shader || node->compute_shader) {
+                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RENDER_NODE_INVALID, "graphics render node invalid shaders");
+                }
+                continue;
+            }
+            if(node->type == RENDER_NODE_TYPE_COMPUTE) {
+                if(node->vertex_shader || node->fragment_shader || !node->compute_shader) {
+                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RENDER_NODE_INVALID, "compute render node invalid shaders");
+                }
+                continue;
+            }
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RENDER_NODE_INVALID, "invalid render node type");
+        }
+    }
+    
+    /* NODES CREATION */ {
+        /* byte buffer for reading shaders */
+        ByteBuffer read_buffer = {
+            .buffer = malloc(4096 * 4),
+            .size = 4096 * 4
+        };
+        if(!read_buffer.buffer) {
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL, "failed to allocate shader read buffer");
+        }
+        /* allocate pipeline nodes buffer */
+        if(!(execute_context->render_nodes = malloc(sizeof(RenderNodeInternal) * settings->node_count))) {
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL, "failed to allocate pipeline nodes buffer");
+        }
+
+        /* create internal render nodes */
+        const u32 node_count = execute_context->render_nodes_count = settings->node_count;
+        for(u32 i = 0; i < node_count; i++) {
+            const RenderNode* node = &settings->nodes[i];
+            RenderNodeInternal* internal_node = &execute_context->render_nodes[i];
+            
+            if(node->type == RENDER_NODE_TYPE_GRAPHICS) {
+                *internal_node = (RenderNodeInternal) {
+                    .type = RENDER_NODE_TYPE_GRAPHICS,
+                    .pipeline_layout = render_context->binding_context->full_pipeline_layout ? render_context->binding_context->full_pipeline_layout : render_context->binding_context->empty_pipeline_layout
+                };
+                if(!(internal_node->vertex_shader = createShaderModule(vulkan_context->device, node->vertex_shader, &read_buffer))) {
+                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_SHADER_MODULE_CREATE, "failed to create vertex shader module");
+                }
+                if(!(internal_node->fragment_shader = createShaderModule(vulkan_context->device, node->fragment_shader, &read_buffer))) {
+                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_SHADER_MODULE_CREATE, "failed to create fragment shader module");
+                }
+
+                /* @(FIX): different render attachments */
+                if(!createGraphicsPipeline(vulkan_context->device, render_context->swapchain_params.surface_format.format, render_context->swapchain_params.depth_format, internal_node)) {
+                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_PIPELINE_CREATE, "failed to create graphics pipeline");
+                }
+            }
+        }
+
+        free(read_buffer.buffer);
+        read_buffer.buffer = NULL;
+    }
+
+    return MSG_CODE_SUCCESS;
+}
+
+void destroyExecuteContext(const VulkanContext* vulkan_context, RenderExecuteContext* execute_context) {
+    const u32 render_node_count = execute_context->render_nodes_count;
+    /* destroy pipelines and shader modules */
+    for(u32 i = 0; i < render_node_count; i++) {
+        if(execute_context->render_nodes[i].type == RENDER_NODE_TYPE_GRAPHICS) {
+            vkDestroyPipeline(vulkan_context->device, execute_context->render_nodes[i].pipeline, NULL);
+            vkDestroyShaderModule(vulkan_context->device, execute_context->render_nodes[i].vertex_shader, NULL);
+            vkDestroyShaderModule(vulkan_context->device, execute_context->render_nodes[i].fragment_shader, NULL);
+        }
+        if(execute_context->render_nodes[i].type == RENDER_NODE_TYPE_COMPUTE) {
+            vkDestroyPipeline(vulkan_context->device, execute_context->render_nodes[i].pipeline, NULL);
+            vkDestroyShaderModule(vulkan_context->device, execute_context->render_nodes[i].compute_shader, NULL);
+        }
+    }
+    free(execute_context->render_nodes);
+    *execute_context = (RenderExecuteContext){0};
+}
+
+
+VkBuffer createBuffer(VkDevice device, u64 size, u32 queue_family, u32 usage) {
+    VkBuffer buffer = NULL;
+    VkBufferCreateInfo buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .usage = usage,
+        .size = size,
+        .pQueueFamilyIndices = &queue_family,
+        .queueFamilyIndexCount = 1,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    if(vkCreateBuffer(device, &buffer_info, NULL, &buffer) != VK_SUCCESS) {
+        return NULL;
+    }
+    return buffer;
+}
+
+i32 createBindingContext(const VulkanContext* vulkan_context, const RenderSettings* settings, MsgCallback_pfn msg_callback, RenderBindingContext* binding_context) {
+    *binding_context = (RenderBindingContext){0};
+
+    /* get enough space in pool for descriptors */
+    VkDescriptorPoolCreateInfo descriptor_pool_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .maxSets = MAX_DESCRIPTOR_SET_COUNT,
+        .pPoolSizes = (VkDescriptorPoolSize[]) {
+            (VkDescriptorPoolSize) {
+                .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .descriptorCount = 128
+            },
+            (VkDescriptorPoolSize) {
+                .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = 128
+            }
+        },
+        .poolSizeCount = 2
+    };
+    if(vkCreateDescriptorPool(vulkan_context->device, &descriptor_pool_info, NULL, &binding_context->descirptor_pool) != VK_SUCCESS) {
+        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_DESCRIPTOR_POOL_CREATE, "failed to create render descriptor pool");
+    }
+
+    /* CREATE EMPTY LAYOUT */ {
+        const VkDescriptorSetLayoutCreateInfo layout_create_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .pBindings = NULL,
+            .bindingCount = 0
+        };
+        const VkPipelineLayoutCreateInfo pipeline_layout_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .pSetLayouts = &binding_context->empty_set_layout,
+            .setLayoutCount = 1
+        };
+        if(vkCreateDescriptorSetLayout(vulkan_context->device, &layout_create_info, NULL, &binding_context->empty_set_layout) != VK_SUCCESS) {
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_DESCRIPTOR_SET_LAYOUT, "failed to create empty descriptor set layout");
+        }
+        if(vkCreatePipelineLayout(vulkan_context->device, &pipeline_layout_info, NULL, &binding_context->empty_pipeline_layout) != VK_SUCCESS) {
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_PIPELINE_LAYOUT_CREATE, "failed to create empty pipeline layout");
+        };
+    }
+   
+    if(!settings || settings->binding_count == 0) {
+        return MSG_CODE_SUCCESS;
+    }
+
+    /* CREATE DESCRIPTOR SETS & LAYOUTS */ {
+        VkDescriptorSetLayoutBinding layout_bindings[MAX_DESCRIPTOR_SET_COUNT][MAX_BINDING_COUNT] = {0};
+        VkDescriptorSetLayoutCreateInfo layout_infos[MAX_DESCRIPTOR_SET_COUNT] = {0};
+        u32 binding_counts[MAX_DESCRIPTOR_SET_COUNT] = {0};
+
+        /* validate bindings and fill layout bindings */
+        const u32 binding_count = settings->binding_count;
+        for(u32 i = 0; i < binding_count; i++) {
+            const RenderBinding* render_binding = &settings->bindings[i];
+            /* validate if it is unique */
+            for(u32 j = 0; j < i; j++) {
+                if(render_binding->binding == settings->bindings[j].binding && render_binding->set == settings->bindings[j].set) {
+                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RENDER_BINDING_INVALID, "render binding validation failed, two bindings exists with same location");
+                }
+            }
+            /* validate type */
+            if(
+                render_binding->type != RENDER_BINDING_TYPE_UNIFORM_BUFFER &&
+                render_binding->type != RENDER_BINDING_TYPE_STORAGE_BUFFER
+            ) {
+                MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RENDER_BINDING_INVALID, "render binding validation failed, two bindings exists with same location");
+            }
+
+            /* configure binding descriptor for descriptor set */
+            layout_bindings[render_binding->set][binding_counts[render_binding->set]] = (VkDescriptorSetLayoutBinding) {
+                .binding = render_binding->binding,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_ALL
+            };
+            switch (render_binding->type) {
+                case RENDER_BINDING_TYPE_UNIFORM_BUFFER:
+                    layout_bindings[render_binding->set][binding_counts[render_binding->set]].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                    break;
+                case RENDER_BINDING_TYPE_STORAGE_BUFFER:
+                    layout_bindings[render_binding->set][binding_counts[render_binding->set]].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                default:
+                    break;
+            }
+            binding_counts[render_binding->set]++;
+        }
+
+        /* get descriptor set count */
+        for(u32 i = 0; i < MAX_DESCRIPTOR_SET_COUNT; i++) {
+            if(binding_counts[i] != 0 && binding_context->descriptor_set_count != i) {
+                MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BAD_BINDING_LAYOUT, "some descriptor sets are missing and have no bindings");
+            }
+            binding_context->descriptor_set_count = (binding_counts[i] != 0) ? i + 1 : binding_context->descriptor_set_count;
+        }
+
+        const u32 descriptor_set_count = binding_context->descriptor_set_count;
+        for(u32 i = 0; i < descriptor_set_count; i++) {
+            /* create descriptor set layout */
+            layout_infos[i] = (VkDescriptorSetLayoutCreateInfo) {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                .pBindings = layout_bindings[i],
+                .bindingCount = binding_counts[i]
+            };
+            if(vkCreateDescriptorSetLayout(vulkan_context->device, &layout_infos[i], NULL, &binding_context->descriptor_layouts[i]) != VK_SUCCESS) {
+                MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_DESCRIPTOR_SET_LAYOUT, "failed to create vulkan descriptor set layout");
+            }
+        }
+
+        /* create all descriptor sets */
+        const VkDescriptorSetAllocateInfo descriptor_set_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = binding_context->descirptor_pool,
+            .descriptorSetCount = binding_context->descriptor_set_count,
+            .pSetLayouts = binding_context->descriptor_layouts
+        };
+        if(vkAllocateDescriptorSets(vulkan_context->device, &descriptor_set_info, binding_context->desciptor_sets) != VK_SUCCESS) {
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_DESCRIPTOR_SET, "failed to create descriptor set");
+        }
+
+        VkPipelineLayoutCreateInfo pipeline_layout_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .pSetLayouts = binding_context->descriptor_layouts,
+            .setLayoutCount = binding_context->descriptor_set_count
+        };
+        if(vkCreatePipelineLayout(vulkan_context->device, &pipeline_layout_info, NULL, &binding_context->full_pipeline_layout) != VK_SUCCESS) {
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_PIPELINE_LAYOUT_CREATE, "failed to create full pipeline layout");
+        }
+    }
+
+    /* in this variables allocation information will be accumulated */
+    VkMemoryRequirements device_memory_requirements = (VkMemoryRequirements){.memoryTypeBits = U32_MAX};
+    VkMemoryRequirements host_memory_requirements = (VkMemoryRequirements){.memoryTypeBits = U32_MAX};
+
+    /* CREATE BINDINGS */ {
+        const u32 binding_count = binding_context->render_binding_count = settings->binding_count;
+        for(u32 i = 0; i < binding_count; i++) {
+            const RenderBinding* setting_binding = &settings->bindings[i];
+            RenderBindingInternal* internal_binding = &binding_context->render_bindings[i];
+            /* if uniform buffer */
+            if(setting_binding->type == RENDER_BINDING_TYPE_UNIFORM_BUFFER) {
+                *internal_binding = (RenderBindingInternal) {
+                    .type = RENDER_BINDING_TYPE_UNIFORM_BUFFER,
+                    .binding = setting_binding->binding,
+                    .set = setting_binding->set,
+                    .init_batch = setting_binding->initial_batch,
+                    .frame_batch = setting_binding->frame_batch
+                };
+                if(vulkan_context->device_type == DEVICE_TYPE_DESCRETE) {
+                    /* check for host side mutability */
+                    if(setting_binding->initial_batch || setting_binding->frame_batch) {
+                        /* create device buffer */
+                        internal_binding->device_resource = createBuffer(vulkan_context->device, setting_binding->size, vulkan_context->render_family_id, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+                        if(!internal_binding->device_resource) {
+                            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_CREATE, "failed to create uniform device buffer");
+                        }
+                        /* create host buffer */
+                        internal_binding->host_resource = createBuffer(vulkan_context->device, setting_binding->size, vulkan_context->render_family_id, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+                        if(!internal_binding->host_resource) { 
+                            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_CREATE, "failed to create uniform host buffer");
+                        }
+                    } else {
+                        /* create only device buffer */
+                        internal_binding->device_resource = createBuffer(vulkan_context->device, setting_binding->size, vulkan_context->render_family_id, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+                        if(!internal_binding->device_resource) {
+                            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_CREATE, "failed to create uniform device buffer");
+                        }
+                    }
+                }
+                if(vulkan_context->device_type == DEVICE_TYPE_INTEGRATED) {
+                    /* create only device buffer */
+                    internal_binding->host_resource = createBuffer(vulkan_context->device, setting_binding->size, vulkan_context->render_family_id, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+                    if(!internal_binding->host_resource) {
+                        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_CREATE, "failed to create uniform host buffer");
+                    }
+                }
+            }
+
+            /* get memory requirements for buffers */
+            if(internal_binding->device_resource) {
+                /* get memory requirements */
+                VkMemoryRequirements requirements = (VkMemoryRequirements){0};
+                /* different functions for different types */
+                if(setting_binding->type == RENDER_BINDING_TYPE_UNIFORM_BUFFER || setting_binding->type == RENDER_BINDING_TYPE_STORAGE_BUFFER) {
+                    vkGetBufferMemoryRequirements(vulkan_context->device, (VkBuffer)internal_binding->device_resource, &requirements);
+                }
+                /* set data to render binding */
+                internal_binding->device_offset = ALIGN(device_memory_requirements.size, requirements.alignment);
+                internal_binding->size = setting_binding->size;
+                /* adjust allocation requirement */
+                device_memory_requirements.size = internal_binding->device_offset + requirements.size;
+                device_memory_requirements.alignment = MAX(device_memory_requirements.alignment, requirements.alignment);
+                device_memory_requirements.memoryTypeBits &= device_memory_requirements.memoryTypeBits;
+            }
+            if(internal_binding->host_resource) {
+                /* get memory requirements */
+                VkMemoryRequirements requirements = (VkMemoryRequirements){0};
+                /* different functions for different types */
+                if(setting_binding->type == RENDER_BINDING_TYPE_UNIFORM_BUFFER || setting_binding->type == RENDER_BINDING_TYPE_STORAGE_BUFFER) {
+                    vkGetBufferMemoryRequirements(vulkan_context->device, (VkBuffer)internal_binding->host_resource, &requirements);
+                }
+                /* set data to render binding */
+                internal_binding->device_offset = ALIGN(host_memory_requirements.size, requirements.alignment);
+                internal_binding->size = setting_binding->size;
+                /* adjust allocation requirement */
+                host_memory_requirements.size = internal_binding->device_offset + requirements.size;
+                host_memory_requirements.alignment = MAX(host_memory_requirements.alignment, requirements.alignment);
+                host_memory_requirements.memoryTypeBits &= host_memory_requirements.memoryTypeBits;
+            }
+        }
+    }
+
+    /* ALLOCATE ARENA */ {
+        if(vulkan_context->device_type == DEVICE_TYPE_DESCRETE) {
+            if(device_memory_requirements.size != 0) {
+                binding_context->device_memory_allocation = vramArenaAllocate(&device_memory_requirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+            }
+            if(host_memory_requirements.size != 0) {
+                binding_context->host_memory_allocation = vramArenaAllocate(&host_memory_requirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            }
+        }
+        if(vulkan_context->device_type == DEVICE_TYPE_INTEGRATED) {
+            /* device memory allocation usually is not used */
+            if(device_memory_requirements.size != 0) {
+                binding_context->device_memory_allocation = vramArenaAllocate(&device_memory_requirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, 0);
+            }
+            if(host_memory_requirements.size != 0) {
+                binding_context->host_memory_allocation = vramArenaAllocate(&host_memory_requirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, 0);
+            }
+        }
+    } 
+
+    /* BIND MEMORY */ {
+        const u32 render_binding_count = binding_context->render_binding_count;
+        for(u32 i = 0; i < render_binding_count; i++) {
+            const RenderBindingInternal* render_binding = &binding_context->render_bindings[i];
+            /* bind buffer memory */
+            if(render_binding->type == RENDER_BINDING_TYPE_UNIFORM_BUFFER || render_binding->type == RENDER_BINDING_TYPE_STORAGE_BUFFER) {
+                if(render_binding->device_resource) {
+                    if(vkBindBufferMemory(vulkan_context->device, (VkBuffer)render_binding->device_resource, binding_context->device_memory_allocation, render_binding->device_offset) != VK_SUCCESS) {
+                        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BIND_RESOURCE_MEMORY, "failed to bind device buffer memory");
+                    }
+                }
+                if(render_binding->host_resource) {
+                    if(vkBindBufferMemory(vulkan_context->device, (VkBuffer)render_binding->host_resource, binding_context->host_memory_allocation, render_binding->host_offset) != VK_SUCCESS) {
+                        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BIND_RESOURCE_MEMORY, "failed to bind host buffer memory");
+                    }
+                }
+            }
+        }
+    }
+
+    return MSG_CODE_SUCCESS;
+}
+
+void destroyBindingContext(const VulkanContext* vulkan_context, RenderBindingContext* binding_context) {
+    /* destroy resources */
+    for(u32 i = 0; i < binding_context->render_binding_count; i++) {
+        RenderBindingInternal* render_binding = &binding_context->render_bindings[i];
+        if(render_binding->type == RENDER_BINDING_TYPE_UNIFORM_BUFFER || render_binding->type == RENDER_BINDING_TYPE_STORAGE_BUFFER) {
+            if(render_binding->device_resource) {
+                vkDestroyBuffer(vulkan_context->device, (VkBuffer)render_binding->device_resource, NULL);
+            }
+            if(render_binding->host_resource) {
+                vkDestroyBuffer(vulkan_context->device, (VkBuffer)render_binding->host_offset, NULL);
+            }
+        }
+    }
+    /* descriptor sets */
+    for(u32 i = 0; i < binding_context->descriptor_set_count; i++) {
+        vkDestroyDescriptorSetLayout(vulkan_context->device, binding_context->descriptor_layouts[i], NULL);
+    }
+    /* destroy full layout */
+    if(binding_context->full_pipeline_layout) {
+        vkDestroyPipelineLayout(vulkan_context->device, binding_context->full_pipeline_layout, NULL);
+    }
+    /* destroy empty layouts */
+    vkDestroyPipelineLayout(vulkan_context->device, binding_context->empty_pipeline_layout, NULL);
+    vkDestroyDescriptorSetLayout(vulkan_context->device, binding_context->empty_set_layout, NULL);
+    /* destroy descriptor pool */
+    vkDestroyDescriptorPool(vulkan_context->device, binding_context->descirptor_pool, NULL);
+
+    /* invalidate context */
+    *binding_context = (RenderBindingContext){0};
+}
+
+
 /* selects optimal swapchain params */
 b32 getSwapchainParams(VkSurfaceKHR surface, VkPhysicalDevice device, GLFWwindow* window, SwapchainParams* swapchain_params) {
     #define MAX_SURFACE_FORMATS_COUNT 512
@@ -335,7 +722,7 @@ b32 getSwapchainParams(VkSurfaceKHR surface, VkPhysicalDevice device, GLFWwindow
 }
 
 /* called only in renderCreateContext during initial swapchain creation and when window is resized (also creates depth buffer)*/
-i32 renderCreateSwapchain(const VulkanContext* vulkan_context, msg_callback_pfn msg_callback, RenderContext* render_context) {
+i32 renderCreateSwapchain(const VulkanContext* vulkan_context, MsgCallback_pfn msg_callback, RenderContext* render_context) {
 
     /* COLOR */ {
         /* create swapchain based on selected params*/
@@ -440,7 +827,7 @@ i32 renderCreateSwapchain(const VulkanContext* vulkan_context, msg_callback_pfn 
 }
 
 /* called when render loop notices window resize condition */
-i32 renderOnWindowResize(const VulkanContext* vulkan_context, msg_callback_pfn msg_callback, RenderContext* render_context) {
+i32 renderOnWindowResize(const VulkanContext* vulkan_context, MsgCallback_pfn msg_callback, RenderContext* render_context) {
     vkDeviceWaitIdle(vulkan_context->device);
     
     /* DESTRUCTION */ {
@@ -471,7 +858,7 @@ i32 renderOnWindowResize(const VulkanContext* vulkan_context, msg_callback_pfn m
 }
 
 /* runs main render loop */
-i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callback, RenderContext* render_context) {
+i32 renderLoop(const VulkanContext* vulkan_context, MsgCallback_pfn msg_callback, RenderContext* render_context) {
     typedef struct {
         VkSemaphore image_submit_semaphores[MAX_SWAPCHAIN_IMAGE_COUNT];
         VkSemaphore image_available_semaphore;
@@ -561,171 +948,14 @@ i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callbac
         };
     }
 
-    /* @(FIX): add comments */
-    /* UPDATE DESCRIPTORS */ {
-        typedef struct {
-            VkWriteDescriptorSet write_sets[MAX_DESCRIPTOR_BINDING_COUNT];
-            VkDescriptorBufferInfo buffer_infos[MAX_DESCRIPTOR_BINDING_COUNT];
-            u32 write_set_count;
-            u32 buffer_info_count;
-        } ResourceDescriptorWriteBuffer;
-
-        if(render_context->resource_node_count == 0) goto _skip_descriptors;
-
-        ResourceDescriptorWriteBuffer* resource_descriptor_write = malloc(sizeof(ResourceDescriptorWriteBuffer));
-        if(!resource_descriptor_write) {
-            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL, "failed to allocate descriptor buffer info array");
-        }
-        *resource_descriptor_write = (ResourceDescriptorWriteBuffer){0};
-
-        const u32 resource_node_count = render_context->resource_node_count;
-        for(u32 i = 0; i < resource_node_count; i++) {
-            const ResourceNode* resource_node = &render_context->resource_nodes[i];
-            if(resource_node->type == RENDER_BINDING_TYPE_UNIFORM_BUFFER) {
-                resource_descriptor_write->buffer_infos[resource_descriptor_write->buffer_info_count] = (VkDescriptorBufferInfo) {
-                    .buffer = resource_node->device_resource,
-                    .offset = 0,
-                    .range = resource_node->size
-                };
-                resource_descriptor_write->write_sets[resource_descriptor_write->write_set_count] = (VkWriteDescriptorSet) {
-                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                    .dstSet = render_context->descriptor_set,
-                    .dstBinding = resource_node->binding,
-                    .dstArrayElement = 0,
-                    .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                    .descriptorCount = 1,
-                    .pBufferInfo = &resource_descriptor_write->buffer_infos[resource_descriptor_write->buffer_info_count],
-                    .pImageInfo = NULL,
-                    .pTexelBufferView = NULL
-                };
-                resource_descriptor_write->buffer_info_count++;
-                resource_descriptor_write->write_set_count++;
-                continue;
-            }
-
-            /* @(FIX): add different render binding types */
-        }
-        vkUpdateDescriptorSets(vulkan_context->device, resource_descriptor_write->write_set_count, resource_descriptor_write->write_sets, 0, NULL);
-
-        free(resource_descriptor_write);
-        _skip_descriptors: {}
-    }
-
-
-    /* @(FIX): not checking for zero size map*/
-    /* INITIAL BATCH */ {
-        if(render_context->host_resource_memory_size != 0) {
-            if(vkMapMemory(vulkan_context->device, render_context->host_resource_memory, 0, render_context->host_resource_memory_size, 0, &render_context->host_resource_memory_map) != VK_SUCCESS) {
-                MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_MAP_MEMORY, "failed to map resource memory");
-            }
-        }
-
-        if(render_context->resource_node_count == 0) goto _skip_initial_batch;
-        const u32 resource_node_count = render_context->resource_node_count;
-
-        /* begin transfer buffer */
-        const VkCommandBufferBeginInfo command_buffer_begin_info = (VkCommandBufferBeginInfo) {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
-        };
-        vkResetCommandBuffer(transfer_command_buffer, 0);
-        vkBeginCommandBuffer(transfer_command_buffer, &command_buffer_begin_info);
-
-        u32 nodes_found = 0;
-        /* iterate through resources, write memory and then issue command buffer copy commands */
-        for(u32 i = 0; i < resource_node_count; i++) {
-            const ResourceNode* resource_node = &render_context->resource_nodes[i];
-            if(resource_node->init_batch) {
-                resource_node->init_batch((u8*)render_context->host_resource_memory_map + resource_node->host_offset);
-
-                VkBufferCopy buffer_copy = {
-                    .srcOffset = 0,
-                    .dstOffset = 0,
-                    .size = resource_node->size
-                };
-                vkCmdCopyBuffer(transfer_command_buffer, resource_node->host_resource, resource_node->device_resource, 1, &buffer_copy);
-                nodes_found++;
-            }
-        }
-        /* end transfer command buffer */
-        vkEndCommandBuffer(transfer_command_buffer);
-        if(nodes_found == 0) {
-            goto _skip_initial_batch;
-        };
-        vkResetFences(vulkan_context->device, 1, &sync_objects.transfer_fence);
-        /* submit to queue */
-        VkSubmitInfo submit_info = (VkSubmitInfo) {
-            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            .waitSemaphoreCount = 0,
-            .signalSemaphoreCount = 0,
-            .pWaitSemaphores = NULL,
-            .pWaitDstStageMask = NULL,
-            .pSignalSemaphores = NULL,
-            .commandBufferCount = 1,
-            .pCommandBuffers = &transfer_command_buffer
-        };
-        vkQueueSubmit(vulkan_context->render_queue, 1, &submit_info, sync_objects.transfer_fence);
-        _skip_initial_batch: {}
-    }
-
     /* render loop itself */
     while (!glfwWindowShouldClose(vulkan_context->window)) {
         glfwPollEvents();
-
-        /* update call */
-        if(render_context->update_callback) {
-            RenderUpdateContext update_context = {
-                .screen_x = render_context->swapchain_params.extent.width,
-                .screen_y = render_context->swapchain_params.extent.height
-            };
-            render_context->update_callback(&update_context);
-        }
-
-        /* @(FIX): add comments */
-        /* FRAME BATCH */ {
-            if(vkGetFenceStatus(vulkan_context->device, sync_objects.transfer_fence) != VK_SUCCESS) goto _skip_frame_batch;
-
-            vkResetCommandBuffer(transfer_command_buffer, 0);
-            const VkCommandBufferBeginInfo transfer_command_buffer_begin_info = {
-                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
-            };
-            vkBeginCommandBuffer(transfer_command_buffer, &transfer_command_buffer_begin_info);
-            const u32 resource_node_count = render_context->resource_node_count;
-            for(u32 i = 0; i < resource_node_count; i++) {
-                const ResourceNode* resource_node = &render_context->resource_nodes[i];
-                if(resource_node->frame_batch) {
-                    resource_node->frame_batch((u8*)render_context->host_resource_memory_map + resource_node->host_offset);
-                    
-                    VkBufferCopy buffer_copy = {
-                        .srcOffset = 0,
-                        .dstOffset = 0,
-                        .size = resource_node->size
-                    };
-                    vkCmdCopyBuffer(transfer_command_buffer, resource_node->host_resource, resource_node->device_resource, 1, &buffer_copy);
-                }
-            }
-            vkEndCommandBuffer(transfer_command_buffer);
-            /* submit to queue */
-            VkSubmitInfo submit_info = (VkSubmitInfo) {
-                .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                .waitSemaphoreCount = 0,
-                .signalSemaphoreCount = 0,
-                .pWaitSemaphores = NULL,
-                .pWaitDstStageMask = NULL,
-                .pSignalSemaphores = NULL,
-                .commandBufferCount = 1,
-                .pCommandBuffers = &transfer_command_buffer
-            };
-            vkResetFences(vulkan_context->device, 1, &sync_objects.transfer_fence);
-            vkQueueSubmit(vulkan_context->render_queue, 1, &submit_info, sync_objects.transfer_fence);
-
-            _skip_frame_batch: {}
-        }
-        
         u32 image_id = U32_MAX;
 
         /* AQUIRE */ {
             /* wait untill previous frame finishes */
-            vkWaitForFences(vulkan_context->device, 2, (VkFence[]){sync_objects.frame_fence, sync_objects.transfer_fence}, VK_TRUE, U64_MAX);
+            vkWaitForFences(vulkan_context->device, 1, &sync_objects.frame_fence, VK_TRUE, U64_MAX);
             VkResult image_acquire_result = vkAcquireNextImageKHR(vulkan_context->device, render_context->swapchain, U64_MAX, sync_objects.image_available_semaphore, NULL, &image_id);
 
             /* check if frambuffer should resize */
@@ -773,10 +1003,6 @@ i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callbac
             .image = render_context->swapchain_images[image_id]
         };
 
-        /* bind descriptors */
-        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, render_context->pipeline_layout, 0, 1, &render_context->descriptor_set, 0, NULL);
-        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, render_context->pipeline_layout, 0, 1, &render_context->descriptor_set, 0, NULL);
-        
         /* image transition to rendering */
         
         vkCmdPipelineBarrier(
@@ -831,8 +1057,9 @@ i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callbac
             vkCmdSetViewport(command_buffer, 0, 1, &viewport);
             vkCmdSetScissor(command_buffer, 0, 1, &rendering_info.renderArea);
         
-            for(u32 i = 0; i < render_context->pipeline_node_count; i++) {
-                const PipelineNode* pipeline_node = &render_context->pipeline_nodes[i];
+            const u32 render_node_count = render_context->execute_context->render_nodes_count;
+            for(u32 i = 0; i < render_node_count; i++) {
+                const RenderNodeInternal* pipeline_node = &render_context->execute_context->render_nodes[i];
                 if(pipeline_node->type == RENDER_NODE_TYPE_GRAPHICS) {
                     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_node->pipeline);
                     vkCmdDraw(command_buffer, 3, 1, 0, 0);
@@ -886,10 +1113,6 @@ i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callbac
 
     vkDeviceWaitIdle(vulkan_context->device);
 
-    if(render_context->host_resource_memory_map) {
-        vkUnmapMemory(vulkan_context->device, render_context->host_resource_memory);
-    }
-
     /* SYNC OBJECTS DESTROY */ {
         for(u32 i = 0; i < MAX_SWAPCHAIN_IMAGE_COUNT; i++) {
             vkDestroySemaphore(vulkan_context->device, sync_objects.image_submit_semaphores[i], NULL);
@@ -905,14 +1128,11 @@ i32 renderLoop(const VulkanContext* vulkan_context, msg_callback_pfn msg_callbac
 }
 
 /* creates render objects */
-i32 renderCreateContext(const VulkanContext* vulkan_context, const RenderSettings* settings, msg_callback_pfn msg_callback, RenderContext* render_context) {
+i32 renderCreateContext(const VulkanContext* vulkan_context, const RenderSettings* settings, MsgCallback_pfn msg_callback, RenderContext* render_context) {
     /* select swapchain params */
     if(!getSwapchainParams(vulkan_context->surface, vulkan_context->physical_device, vulkan_context->window, &render_context->swapchain_params)) {
         MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_SURFACE_STATS_NOT_SUITABLE, "vulkan surface stats not suitable");
     }
-
-    /* render update function */
-    render_context->update_callback = settings->update_callback;
 
     /* @(FIX): add comments */
     /* TARGETS ALLOCATION */ {
@@ -943,7 +1163,7 @@ i32 renderCreateContext(const VulkanContext* vulkan_context, const RenderSetting
         VkMemoryRequirements depth_prototype_memory = (VkMemoryRequirements){0};
         vkGetImageMemoryRequirements(vulkan_context->device, depth_prototype, &depth_prototype_memory);
 
-        if(!(render_context->targets_allocation = vramAllocate(&depth_prototype_memory, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))) {
+        if(!(render_context->targets_allocation = vramArenaAllocate(&depth_prototype_memory, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))) {
             MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_ALLOCATE_VRAM, "failed to allocate memory for depth image");
         }
         /* dont forget to delete prototypes */
@@ -952,264 +1172,15 @@ i32 renderCreateContext(const VulkanContext* vulkan_context, const RenderSetting
 
     /* create swapchain and depth texture */
     if(MSG_IS_ERROR(renderCreateSwapchain(vulkan_context, msg_callback, render_context))) {
-        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_SWAPCHAIN_CREATE, "vulkan failed to create swapchain");
+        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_SWAPCHAIN_CREATE, "failed to create vulkan swapchain");
     }
 
-    /* DESCRIPTORS */ {
-        /* get enough space in pool for descriptors */
-        VkDescriptorPoolCreateInfo descriptor_pool_info = {
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            .maxSets = MAX_DESCRIPTOR_SETS,
-            .pPoolSizes = (VkDescriptorPoolSize[]) {
-                (VkDescriptorPoolSize) {
-                    .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                    .descriptorCount = 128
-                },
-                (VkDescriptorPoolSize) {
-                    .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                    .descriptorCount = 128
-                }
-            },
-            .poolSizeCount = 2
-        };
-        if(vkCreateDescriptorPool(vulkan_context->device, &descriptor_pool_info, NULL, &render_context->descirptor_pool) != VK_SUCCESS) {
-            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_DESCRIPTOR_POOL_CREATE, "failed to create render descriptor pool");
-        }
-
-        /* if settings are null then nobody specified bindings */
-        if(settings && settings->binding_count != 0) {
-            /* allocate descriptor binding array */
-            VkDescriptorSetLayoutBinding descriptor_bindings[MAX_DESCRIPTOR_BINDING_COUNT] = {0};
-            if(settings->binding_count > MAX_DESCRIPTOR_BINDING_COUNT) {
-                MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_DESCRIPTOR_TOO_MANY_BINDINGS, "too many descriptor bindings");
-            }
-
-            /* @(FIX): add different stageFlags and different descriptor sets */
-            for(u32 i = 0; i < settings->binding_count; i++) {
-                descriptor_bindings[i] = (VkDescriptorSetLayoutBinding) {
-                    .binding = settings->bindings[i].binding,
-                    .stageFlags = VK_SHADER_STAGE_ALL,
-                    .descriptorCount = 1
-                };
-                switch (settings->bindings[i].type) {
-                    case RENDER_BINDING_TYPE_UNIFORM_BUFFER:
-                        descriptor_bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-                        break;
-                    case RENDER_BIDNING_TYPE_STORAGE_BUFFER:
-                        descriptor_bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                        break;
-                    default:
-                        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_INVALID_BINDING_TYPE, "render binding type invalid");
-                }
-            }
-
-            /* create layout set */
-            VkDescriptorSetLayoutCreateInfo layout_create_info = {
-                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                .pBindings = descriptor_bindings,
-                .bindingCount = settings->binding_count
-            };
-            if(vkCreateDescriptorSetLayout(vulkan_context->device, &layout_create_info, NULL, &render_context->descriptor_set_layout) != VK_SUCCESS) {
-                MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_DESCRIPTOR_SET_LAYOUT, "failed to create vulkan descriptor set layout");
-            }
-
-            /* allocate descriptor set based on layout */
-            VkDescriptorSetAllocateInfo descriptor_set_info = {
-                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-                .descriptorPool = render_context->descirptor_pool,
-                .descriptorSetCount = 1,
-                .pSetLayouts = &render_context->descriptor_set_layout
-            };
-            if(vkAllocateDescriptorSets(vulkan_context->device, &descriptor_set_info, &render_context->descriptor_set)) {
-                MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_DESCRIPTOR_SET, "failed to create descriptor set");
-            }
-
-            VkPipelineLayoutCreateInfo pipeline_layout_info = {
-                .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                .pSetLayouts = &render_context->descriptor_set_layout,
-                .setLayoutCount = 1
-            };
-            if(vkCreatePipelineLayout(vulkan_context->device, &pipeline_layout_info, NULL, &render_context->pipeline_layout) != VK_SUCCESS) {
-                MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_PIPELINE_LAYOUT_CREATE, "failed to create pipeline layout for descriptor");
-            };
-        }
+    if(MSG_IS_ERROR(createBindingContext(vulkan_context, settings, msg_callback, render_context->binding_context))) {
+        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RENDER_BINDING_CONTEXT_CREATE, "failed to create render binding context");
     }
 
-    /* @(FIX): simplify, add comments */
-    /* RESOURCE NODES */ {
-        if(!settings) goto _no_bindings;
-        if(settings->binding_count == 0) goto _no_bindings;
-
-        if(!(render_context->resource_nodes = malloc(sizeof(ResourceNode) * settings->binding_count))) {
-            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL, "failed to allocate resource nodes buffer");
-        }
-
-        VkMemoryRequirements host_resource_requirements = (VkMemoryRequirements){.memoryTypeBits = U32_MAX};
-        VkMemoryRequirements device_resource_requirements = (VkMemoryRequirements){.memoryTypeBits = U32_MAX};
-
-        render_context->resource_node_count = 0;
-        for(u32 i = 0; i < settings->binding_count; i++) {
-            const RenderBinding* binding = &settings->bindings[i];
-            ResourceNode* node = &render_context->resource_nodes[render_context->resource_node_count];
-
-            VkMemoryRequirements device_buffer_memory = (VkMemoryRequirements){0};
-            VkMemoryRequirements host_buffer_memory = (VkMemoryRequirements){0};
-
-            /* uniform buffer node */
-            if(binding->type == RENDER_BINDING_TYPE_UNIFORM_BUFFER) {
-                *node = (ResourceNode) {
-                    .type = RENDER_BINDING_TYPE_UNIFORM_BUFFER,
-                    .size = binding->size,
-                    .init_batch = binding->initial_batch,
-                    .frame_batch = binding->frame_batch,
-                    .binding = binding->binding
-                };
-
-                /* if usage device only, should be no batches */    
-                if(binding->usage == RENDER_BINDING_USAGE_DEVICE_ONLY) {
-                    /* batch validation */
-                    if(binding->initial_batch || binding->frame_batch) {
-                        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BINDING_USAGE_INVALID, "can not use memory write batches for device only buffers");
-                    }
-                    /* create buffer */
-                    if(!(node->device_resource = createBuffer(vulkan_context->device, binding->size, vulkan_context->render_family_id, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT))) {
-                        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_RESOURCE, "failed to create device uniform buffer");
-                    }
-                    /* adjust memory requirements */
-                    vkGetBufferMemoryRequirements(vulkan_context->device, (VkBuffer)node->device_resource, &device_buffer_memory);
-                    device_resource_requirements.memoryTypeBits &= device_buffer_memory.memoryTypeBits;
-                    device_resource_requirements.alignment = MAX(device_resource_requirements.alignment, device_buffer_memory.alignment);
-                    node->device_offset = ALIGN(device_resource_requirements.size, device_buffer_memory.alignment); /* dont forget to set offset */
-                    device_resource_requirements.size = node->device_offset + device_buffer_memory.size;
-                }
-                /* if usage device and host, batches required */ 
-                else if(binding->usage == RENDER_BINDING_USAGE_HOST_DEVICE) {
-                    /* batch validation */
-                    if(!binding->initial_batch && !binding->frame_batch) {
-                        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BINDING_USAGE_INVALID, "neither initial batch nor frame batch are speciffied, but usage is host device");
-                    } 
-                    /* create buffer on device */
-                    if(!(node->device_resource = createBuffer(vulkan_context->device, binding->size, vulkan_context->render_family_id, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT))) {
-                        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_RESOURCE, "failed to create device uniform buffer");
-                    }
-                    /* create buffer on host */
-                    if(!(node->host_resource = createBuffer(vulkan_context->device, binding->size, vulkan_context->render_family_id, VK_BUFFER_USAGE_TRANSFER_SRC_BIT))) {
-                        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_RESOURCE, "failed to create host uniform buffer");
-                    }
-                    /* adjust device memory requirements */
-                    vkGetBufferMemoryRequirements(vulkan_context->device, (VkBuffer)node->device_resource, &device_buffer_memory);
-                    device_resource_requirements.alignment = MAX(device_resource_requirements.alignment, device_buffer_memory.alignment);
-                    device_resource_requirements.memoryTypeBits &= device_buffer_memory.memoryTypeBits;
-                    node->device_offset = ALIGN(device_resource_requirements.size, device_buffer_memory.alignment); /* dont forget to set offset */
-                    device_resource_requirements.size = node->device_offset + device_buffer_memory.size;
-                    /* adjust host memory requirements */
-                    vkGetBufferMemoryRequirements(vulkan_context->device, (VkBuffer)node->host_resource, &host_buffer_memory);
-                    host_resource_requirements.memoryTypeBits &= host_buffer_memory.memoryTypeBits;
-                    host_resource_requirements.alignment = MAX(host_resource_requirements.alignment, host_buffer_memory.alignment);
-                    node->host_offset = ALIGN(host_resource_requirements.size, host_buffer_memory.alignment); /* dont forget to set offset */
-                    host_resource_requirements.size = node->host_offset + host_buffer_memory.size;
-                }
-                /* usage unspecified */
-                else {
-                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BINDING_USAGE_INVALID, "render binding usage unspecified");
-                }
-
-                render_context->resource_node_count++;
-                continue;
-            }
-
-            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BINDING_TYPE_INVALID, "render binding usage unspecified");
-        }
-        if(render_context->resource_node_count == 0) goto _no_bindings;
-
-        /* allocating memory on arena */
-        if(device_resource_requirements.size != 0) {
-            if(!(render_context->device_resource_memory = vramAllocate(&device_resource_requirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))) {
-                MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_ALLOCATE_VRAM, "failed to allocate device resource memory");
-            }
-        }
-        if(host_resource_requirements.size != 0) {
-            if(!(render_context->host_resource_memory = vramAllocate(&host_resource_requirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, 0))) {
-                MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_ALLOCATE_VRAM, "failed to allocate host resource memory");
-            }
-        }
-        render_context->device_resource_memory_size = device_resource_requirements.size;
-        render_context->host_resource_memory_size = host_resource_requirements.size;
-
-        /* bind memory, no validation here */
-        for(u32 i = 0; i < render_context->resource_node_count; i++) {
-            const ResourceNode* resource_node = &render_context->resource_nodes[i];
-            if(resource_node->type == RENDER_BINDING_TYPE_UNIFORM_BUFFER || resource_node->type == RENDER_BIDNING_TYPE_STORAGE_BUFFER) {
-                if(resource_node->host_resource) {
-                    if(vkBindBufferMemory(vulkan_context->device, (VkBuffer)resource_node->host_resource, render_context->host_resource_memory, resource_node->host_offset) != VK_SUCCESS) {
-                        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BIND_RESOURCE_MEMORY, "failed to bind host buffer to memory");
-                    }
-                }
-                if(resource_node->host_resource) {
-                    if(vkBindBufferMemory(vulkan_context->device, (VkBuffer)resource_node->device_resource, render_context->device_resource_memory, resource_node->device_offset) != VK_SUCCESS) {
-                        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BIND_RESOURCE_MEMORY, "failed to bind device buffer to memory");
-                    }
-                }
-            }
-        }
-
-        _no_bindings: {}
-    }
-
-    /* PIPELINE NODES */ {
-        /* @(FIX): weird way of handling settings dont exist */
-        if(!settings) goto _no_shaders; 
-        if(settings->node_count == 0) goto _no_shaders;
-
-        /* create shader read buffer */
-        ByteBuffer read_buffer = {
-            .buffer = malloc(4096 * 4),
-            .size = 4096 * 4
-        };
-        if(!read_buffer.buffer) {
-            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL, "failed to allocate shader read buffer");
-        }
-        /* allocate pipeline nodes buffer */
-        if(!(render_context->pipeline_nodes = malloc(sizeof(PipelineNode) * settings->node_count))) {
-            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL, "failed to allocate pipeline nodes buffer");
-        }
-
-        /* transform render nodes to pipeline nodes and validate them */
-        render_context->pipeline_node_count = 0;
-        for(u32 i = 0; i < settings->node_count; i++) {
-            const RenderNode* node = &settings->nodes[i];
-            PipelineNode* pipeline_node = &render_context->pipeline_nodes[render_context->pipeline_node_count];
-            /* none nodes are just skipped */
-            if(node->type == RENDER_NODE_TYPE_NONE) continue;
-            /* if graphics node */
-            if(node->type == RENDER_NODE_TYPE_GRAPHICS) {
-                *pipeline_node = (PipelineNode) {
-                    .type = RENDER_NODE_TYPE_GRAPHICS,
-                    .pipeline_layout = render_context->pipeline_layout
-                };
-                /* validate shader types */
-                if(!node->vertex_shader || !node->fragment_shader || node->compute_shader) {
-                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RENDER_NODE_INVALID_SHADERS, "invalid shaders in graphics render node");
-                }
-                /* compile shader modules */
-                if(!(pipeline_node->vertex_shader = createShaderModule(vulkan_context->device, node->vertex_shader, &read_buffer))) {
-                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_SHADER_MODULE, "failed to create vertex shader module");
-                }
-                if(!(pipeline_node->fragment_shader = createShaderModule(vulkan_context->device, node->fragment_shader, &read_buffer))) {
-                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_SHADER_MODULE, "failed to create vertex shader module");
-                }
-
-                if(!createGraphicsPipeline(vulkan_context->device, render_context->swapchain_params.surface_format.format, render_context->swapchain_params.depth_format, pipeline_node)) {
-                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_PIPELINE_CREATE, "failed to create graphics pipeline");
-                }
-                render_context->pipeline_node_count++;
-                continue;
-            }
-            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_INVALID_RENDER_NODE_TYPE, "invalid render node type detected");
-        }
-
-        free(read_buffer.buffer);
-        _no_shaders: {}
+    if(MSG_IS_ERROR(createExecuteContext(vulkan_context, settings, render_context, msg_callback, render_context->execute_context))) {
+        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RENDER_EXECUTE_CONTEXT_CREATE, "failed to create render execute context");
     }
 
     /* COMMAND BUFFERS */ {
@@ -1233,56 +1204,8 @@ void renderDestroyContext(const VulkanContext* vulkan_context, RenderContext* re
         vkDestroyCommandPool(vulkan_context->device, render_context->command_pool, NULL);
     }
 
-    /* @(FIX): add comments */
-    /* PIPELINE NODES */ {
-        if(render_context->pipeline_node_count == 0) goto _skip_pipeline_nodes;
-
-        for(u32 i = 0; i < render_context->pipeline_node_count; i++) {
-            if(render_context->pipeline_nodes[i].type == RENDER_NODE_TYPE_GRAPHICS) {
-                vkDestroyPipeline(vulkan_context->device, render_context->pipeline_nodes[i].pipeline, NULL);
-                vkDestroyShaderModule(vulkan_context->device, render_context->pipeline_nodes[i].vertex_shader, NULL);
-                vkDestroyShaderModule(vulkan_context->device, render_context->pipeline_nodes[i].fragment_shader, NULL);
-            }
-            if(render_context->pipeline_nodes[i].type == RENDER_NODE_TYPE_COMPUTE) {
-                vkDestroyPipeline(vulkan_context->device, render_context->pipeline_nodes[i].pipeline, NULL);
-                vkDestroyShaderModule(vulkan_context->device, render_context->pipeline_nodes[i].compute_shader, NULL);
-            }
-        }
-        free(render_context->pipeline_nodes);
-
-        _skip_pipeline_nodes: {}
-    }
-
-    /* @(FIX): add comments */
-    /* RESOURCE NODES */ {
-        if(render_context->resource_node_count == 0) goto _skip_resource_nodes;
-
-        const u32 resource_node_count = render_context->resource_node_count;
-        for(u32 i = 0; i < resource_node_count; i++) {
-            ResourceNode* resource = &render_context->resource_nodes[i];
-            if(resource->type == RENDER_BINDING_TYPE_UNIFORM_BUFFER || resource->type == RENDER_BIDNING_TYPE_STORAGE_BUFFER) {
-                if(resource->host_resource) {
-                    vkDestroyBuffer(vulkan_context->device, (VkBuffer)resource->host_resource, NULL);
-                }
-                if(resource->device_resource) {
-                    vkDestroyBuffer(vulkan_context->device, (VkBuffer)resource->device_resource, NULL);
-                }
-            }
-        }
-        free(render_context->resource_nodes);
-
-        _skip_resource_nodes: {}
-    }
-
-    /* DESCRIPTORS */ {
-        vkDestroyPipelineLayout(vulkan_context->device, render_context->pipeline_layout, NULL);
-        if(render_context->descriptor_set_layout) {
-            vkDestroyDescriptorSetLayout(vulkan_context->device, render_context->descriptor_set_layout, NULL);
-        }
-        if(render_context->descirptor_pool) {
-            vkDestroyDescriptorPool(vulkan_context->device, render_context->descirptor_pool, NULL);
-        }
-    }
+    destroyExecuteContext(vulkan_context, render_context->execute_context);
+    destroyBindingContext(vulkan_context, render_context->binding_context);
 
     /* SWAPCHAIN IMAGES */ {
         for(u32 i = 0; i < render_context->swapchain_image_count; i++) {
@@ -1297,16 +1220,18 @@ void renderDestroyContext(const VulkanContext* vulkan_context, RenderContext* re
 }
 
 /* render main func */
-i32 renderRun(const VulkanContext* vulkan_context, const RenderSettings* settings, msg_callback_pfn msg_callback) {
-    RenderContext render_context = (RenderContext){0};
-    if(MSG_IS_ERROR(renderCreateContext(vulkan_context, settings, msg_callback, &render_context))) {
+i32 renderRun(const VulkanContext* vulkan_context, const RenderSettings* settings, MsgCallback_pfn msg_callback) {
+    static RenderExecuteContext s_execute_context = (RenderExecuteContext){0};
+    static RenderBindingContext s_binding_context = (RenderBindingContext){0};
+    static RenderContext s_render_context = (RenderContext){.binding_context = &s_binding_context, .execute_context = &s_execute_context};
+    if(MSG_IS_ERROR(renderCreateContext(vulkan_context, settings, msg_callback, &s_render_context))) {
         MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_RENDER_CONTEXT, "failed to create render context");
     }
 
-    if(MSG_IS_ERROR(renderLoop(vulkan_context, msg_callback, &render_context))) {
+    if(MSG_IS_ERROR(renderLoop(vulkan_context, msg_callback, &s_render_context))) {
         MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RENDER_LOOP_FAIL, "vulkan render loop error");
     }
 
-    renderDestroyContext(vulkan_context, &render_context);
+    renderDestroyContext(vulkan_context, &s_render_context);
     return MSG_CODE_SUCCESS;
 }

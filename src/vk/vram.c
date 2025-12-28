@@ -7,13 +7,13 @@ static VkDeviceMemory s_allocations[VRAM_MAX_ALLOCATIONS] = {0};
 static u32 s_allocation_count = 0;
 static VkDevice s_device = NULL;
 
-i32 vramInit(const VulkanContext* vulkan_context) {
+i32 vramArenaInit(const VulkanContext* vulkan_context) {
     vkGetPhysicalDeviceMemoryProperties(vulkan_context->physical_device, &s_memory_properties);
     s_device = vulkan_context->device;
     return MSG_CODE_SUCCESS;
 }
 
-void vramTemrinate(void) {
+void vramArenaTemrinate(void) {
     for(u32 i = 0; i < s_allocation_count; i++) {
         vkFreeMemory(s_device, s_allocations[i], NULL);
         s_allocations[i] = 0;
@@ -23,7 +23,7 @@ void vramTemrinate(void) {
     s_device = NULL;
 }
 
-VkDeviceMemory vramAllocate(const VkMemoryRequirements* requirements, u32 positive_flags, u32 negative_flags) {
+VkDeviceMemory vramArenaAllocate(const VkMemoryRequirements* requirements, u32 positive_flags, u32 negative_flags) {
     if(s_allocation_count > VRAM_MAX_ALLOCATIONS) return NULL;
     
     u32 memory_id = U32_MAX;

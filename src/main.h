@@ -52,7 +52,7 @@ typedef enum {
     MSG_CODE_WARNING = 1 /* first warning code (reserved) */
 } MSG_CODES;
 /* Use this as a error/warning message reciever */
-typedef b32 (*msg_callback_pfn) (i32 msg_code, const char* msg);
+typedef b32 (*MsgCallback_pfn) (i32 msg_code, const char* msg);
 
 /* These stringfy look ugly, but thats the only way around :( */
 #define STRINGIFY(x) #x
@@ -90,8 +90,6 @@ typedef enum {
     MSG_CODE_ERROR_VK_IMAGE_CREATE = -2147483627,
     MSG_CODE_ERROR_VK_IMAGE_BIND_MEMORY = -2147483626,
     MSG_CODE_ERROR_VK_DESCRIPTOR_POOL_CREATE = -2147483625,
-    MSG_CODE_ERROR_VK_DESCRIPTOR_TOO_MANY_BINDINGS = -2147483624,
-    MSG_CODE_ERROR_VK_INVALID_BINDING_TYPE = -2147483623,
     MSG_CODE_ERROR_VK_CREATE_DESCRIPTOR_SET_LAYOUT = -2147483622,
     MSG_CODE_ERROR_VK_CREATE_DESCRIPTOR_SET = -2147483621,
     MSG_CODE_ERROR_VK_ALLOCATE_VRAM = -2147483621,
@@ -100,22 +98,24 @@ typedef enum {
     MSG_CODE_ERROR_VK_FENCE_CREATE = -2147483618,
     MSG_CODE_ERROR_VK_COMMAND_BUFFER_ALLOCATE = -2147483617,
     MSG_CODE_ERROR_VK_COMMAND_POOL_CREATE = -2147483616,
-    MSG_CODE_ERROR_VK_RENDER_NODE_INVALID_SHADERS = -2147483615,
     MSG_CODE_ERROR_VK_READ_BUFFER_REALLOC_FAIL = -2147483614,
     MSG_CODE_ERROR_VK_READ_FILE_TO_BUFFER = -2147483613,
     MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL = -2147483612,
-    MSG_CODE_ERROR_VK_CREATE_SHADER_MODULE = -2147483611,
-    MSG_CODE_ERROR_VK_INVALID_RENDER_NODE_TYPE = -2147483610,
+    MSG_CODE_ERROR_VK_SHADER_MODULE_CREATE = -2147483611,
     MSG_CODE_ERROR_VK_PIPELINE_CREATE = -2147483609,
     MSG_CODE_ERROR_VK_SWAPCHAIN_RECREATE = -2147483608,
     MSG_CODE_ERROR_VK_RESIZE_FAIL = -2147483607,
     MSG_CODE_ERROR_VK_BUFFER_CREATE = -2147483606,
-    MSG_CODE_ERROR_VK_BINDING_USAGE_INVALID = -2147483605,
-    MSG_CODE_ERROR_VK_BINDING_TYPE_INVALID = -2147483604,
     MSG_CODE_ERROR_VK_CREATE_RESOURCE = -2147483603,
     MSG_CODE_ERROR_VK_BIND_RESOURCE_MEMORY = -2147483602,
     MSG_CODE_ERROR_VK_INIT_VRAM_ARENA = -2147483601,
-    MSG_CODE_ERROR_VK_MAP_MEMORY = -2147483600
+    MSG_CODE_ERROR_VK_MAP_MEMORY = -2147483600,
+    MSG_CODE_ERROR_VK_CREATE_PIPELINE_NODES = -2147483599,
+    MSG_CODE_ERROR_VK_RENDER_BINDING_INVALID = -2147483598,
+    MSG_CODE_ERROR_VK_BAD_BINDING_LAYOUT = -2147483597,
+    MSG_CODE_ERROR_VK_RENDER_BINDING_CONTEXT_CREATE = -2147483596,
+    MSG_CODE_ERROR_VK_RENDER_NODE_INVALID = -2147483595,
+    MSG_CODE_ERROR_VK_RENDER_EXECUTE_CONTEXT_CREATE = -2147483594
 } MSG_CODES_VK;
 
 
@@ -123,14 +123,8 @@ typedef enum {
 typedef enum {
     RENDER_BINDING_TYPE_NONE = 0,
     RENDER_BINDING_TYPE_UNIFORM_BUFFER = 1,
-    RENDER_BIDNING_TYPE_STORAGE_BUFFER = 2
+    RENDER_BINDING_TYPE_STORAGE_BUFFER = 2
 } RenderBindingType;
-
-typedef enum {
-    RENDER_BINDING_USAGE_NONE = 0,
-    RENDER_BINDING_USAGE_DEVICE_ONLY = 1,
-    RENDER_BINDING_USAGE_HOST_DEVICE = 2
-} RenderBindingUsage;
 
 typedef void (*RenderMemoryWrite_pfn)(void* ptr);
 
@@ -138,7 +132,6 @@ typedef struct {
     u32 binding;
     u32 set;
     RenderBindingType type;
-    RenderBindingUsage usage;
     u64 size;
     RenderMemoryWrite_pfn initial_batch;
     RenderMemoryWrite_pfn frame_batch;
@@ -188,7 +181,7 @@ typedef enum {
 /* Used by vulkanRun function, provides necessary information for initialization
 and runtime of this function.   */
 typedef struct {
-    msg_callback_pfn msg_callback; /* error and warning handling function */
+    MsgCallback_pfn msg_callback; /* error and warning handling function */
     const char* name;
     u32 x; /* width of window in pixels, not used if fullscreen*/
     u32 y; /* heigh of window in pixels, not used if fullscreen*/

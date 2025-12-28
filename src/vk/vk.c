@@ -27,28 +27,26 @@ const char* c_required_device_extension_names[3] = {
     VK_KHR_SPIRV_1_4_EXTENSION_NAME
 };
 
-/* used to layout queues */
+/* used to get physical device info only once */
 typedef struct {
+    u32 score;
+    u32 type;
     u32 render_family;
     u32 compute_family;
     u32 transfer_family;
-} QueueIndices;
+    VkPhysicalDevice device;
+} DeviceInfo;
 
 
 /* function that determines if physical device is suitable or not */
-b32 vulkanCheckPhysicalDevice(VkPhysicalDevice device, const char** required_extension_names, u32 required_extension_name_count, QueueIndices* queue_indices) {
+b32 vulkanCheckPhysicalDevice(VkPhysicalDevice device, const char** required_extension_names, u32 required_extension_name_count, DeviceInfo* device_info) {
     #define PHYSICAL_DEVICE_MAX_QUEUE_FAMILIES 64
     #define PHYSICAL_DEVICE_MAX_EXTENSIONS 512
     #define QUEUE_FLAGS_MASK (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT)
 
-    VkPhysicalDeviceProperties device_properties = (VkPhysicalDeviceProperties){0};
-
-    /* check basics */
-    vkGetPhysicalDeviceProperties(device, &device_properties);
-    /* @(FIX): add proper integrated gpu support */
-    /*if(device_properties.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
-        return FALSE;
-    }*/
+    *device_info = (DeviceInfo) {
+        .device = device
+    };
 
     /* MATCHING EXTENSIONS */ {
         VkExtensionProperties extension_properties[PHYSICAL_DEVICE_MAX_EXTENSIONS] = {0};
@@ -81,23 +79,35 @@ b32 vulkanCheckPhysicalDevice(VkPhysicalDevice device, const char** required_ext
         vkGetPhysicalDeviceQueueFamilyProperties(device, &family_property_count, family_properties);
 
         /* search for queue indices */
-        *queue_indices = (QueueIndices){ U32_MAX, U32_MAX, U32_MAX };
+        device_info->render_family = device_info->compute_family = device_info->transfer_family = U32_MAX;
         for(u32 i = 0; i < family_property_count; i++) {
             if((VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT) == (QUEUE_FLAGS_MASK & family_properties[i].queueFlags)) {
-                queue_indices->render_family = i;
+                device_info->render_family = i;
                 continue;
             }
             if(VK_QUEUE_COMPUTE_BIT == (QUEUE_FLAGS_MASK & family_properties[i].queueFlags)) {
-                queue_indices->compute_family = i;
+                device_info->compute_family = i;
                 continue;
             }
             if(VK_QUEUE_TRANSFER_BIT == (QUEUE_FLAGS_MASK & family_properties[i].queueFlags)) {
-                queue_indices->transfer_family = i;
+                device_info->transfer_family = i;
                 continue;
             }
         }
-        if(queue_indices->render_family == U32_MAX) {
+        if(device_info->render_family == U32_MAX) {
             return FALSE;
+        }
+    }
+
+    /* DEVICE PROPERTIES */ {
+        VkPhysicalDeviceProperties device_properties = (VkPhysicalDeviceProperties){0};
+        vkGetPhysicalDeviceProperties(device, &device_properties);
+        if(device_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
+            device_info->score += 1000;
+            device_info->type = DEVICE_TYPE_DESCRETE;
+        } else if(device_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
+            device_info->score += 500;
+            device_info->type = DEVICE_TYPE_INTEGRATED;
         }
     }
 
@@ -121,6 +131,8 @@ i32 vulkanCreateContext(const VulkanInfo* info, VulkanContext* context) {
         u32 instance_layer_count;
         VkPhysicalDevice physical_devices[MAX_PHYSICAL_DEVICE_COUNT];
         u32 physical_device_count;
+        DeviceInfo suitable_device_infos[MAX_PHYSICAL_DEVICE_COUNT];
+        u32 suitable_device_count;
     } ContextCreateBuffer;
 
     ContextCreateBuffer* context_create_buffer = (ContextCreateBuffer*)malloc(sizeof(ContextCreateBuffer)); /* ContextCreateBuffer is freed in the end of this function */
@@ -254,18 +266,26 @@ i32 vulkanCreateContext(const VulkanInfo* info, VulkanContext* context) {
         vkEnumeratePhysicalDevices(context->instance, &context_create_buffer->physical_device_count, context_create_buffer->physical_devices);
 
         /* layout queues and check if its suitable */
-        QueueIndices queue_indices = (QueueIndices){0};
         const u32 device_count = context_create_buffer->physical_device_count;
         for(u32 i = 0; i < device_count; i++) {
-            if(vulkanCheckPhysicalDevice(context_create_buffer->physical_devices[i], c_required_device_extension_names, c_required_device_extension_names_count, &queue_indices)) {
-                context->physical_device = context_create_buffer->physical_devices[i];
-                goto _found_gpu;
+            DeviceInfo* device_info = &context_create_buffer->suitable_device_infos[context_create_buffer->suitable_device_count];
+            if(vulkanCheckPhysicalDevice(context_create_buffer->physical_devices[i], c_required_device_extension_names, c_required_device_extension_names_count, device_info)) {
+                context_create_buffer->suitable_device_count++;
             }
         }
-        //_not_found_gpu:
-        MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_FAILED_TO_FIND_GPU, "failed to find suitable gpu");
 
-        _found_gpu:
+        /* if gpu suitable not found */
+        if(context_create_buffer->suitable_device_count == 0) {
+            MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_FAILED_TO_FIND_GPU, "failed to find suitable gpu");
+        }
+        /* select the best option */
+        const DeviceInfo* best_device_info = context_create_buffer->suitable_device_infos;
+        for(u32 i = 0; i < context_create_buffer->suitable_device_count; i++) {
+            if(best_device_info->score < context_create_buffer->suitable_device_infos[i].score) {
+                best_device_info = &context_create_buffer->suitable_device_infos[i];
+            }
+        }
+
         /* now we need to create VkDevice */
         u32 queue_info_count = 0;
         VkDeviceQueueCreateInfo queue_infos[3] = {0};
@@ -274,31 +294,30 @@ i32 vulkanCreateContext(const VulkanInfo* info, VulkanContext* context) {
         /* render queue should always exist or device check will fail */
         queue_infos[queue_info_count] = (VkDeviceQueueCreateInfo) {
             .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-            .queueFamilyIndex = queue_indices.render_family,
+            .queueFamilyIndex = best_device_info->render_family,
             .queueCount = 1,
             .pQueuePriorities = queue_priorities + queue_info_count
         };
         queue_info_count++;
         /* add transfer queue if exists */
-        if(queue_indices.compute_family != U32_MAX) {
+        if(best_device_info->compute_family != U32_MAX) {
             queue_infos[queue_info_count] = (VkDeviceQueueCreateInfo) {
                 .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                .queueFamilyIndex = queue_indices.compute_family,
+                .queueFamilyIndex = best_device_info->compute_family,
                 .queueCount = 1,
                 .pQueuePriorities = queue_priorities + queue_info_count
             };
             queue_info_count++;
         }
-        if(queue_indices.transfer_family != U32_MAX) {
+        if(best_device_info->transfer_family != U32_MAX) {
             queue_infos[queue_info_count] = (VkDeviceQueueCreateInfo) {
                 .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                .queueFamilyIndex = queue_indices.transfer_family,
+                .queueFamilyIndex = best_device_info->transfer_family,
                 .queueCount = 1,
                 .pQueuePriorities = queue_priorities + queue_info_count
             };
             queue_info_count++;
         }
-
 
         VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamic_rendering_feature = (VkPhysicalDeviceDynamicRenderingFeaturesKHR) {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR,
@@ -313,18 +332,21 @@ i32 vulkanCreateContext(const VulkanInfo* info, VulkanContext* context) {
             .queueCreateInfoCount = queue_info_count,
             .pNext = &dynamic_rendering_feature
         };
+        /* get physical device params and create device */
+        context->physical_device = best_device_info->device;
+        context->device_type = best_device_info->type;
         if(vkCreateDevice(context->physical_device, &device_info, NULL, &context->device) != VK_SUCCESS) {
             MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_CREATE_DEVICE, "failed to create vulkan device");
         }
 
         /* get queues if they exists, render queue always exist or something is horribly bad */
-        context->render_family_id = queue_indices.render_family;
-        vkGetDeviceQueue(context->device, queue_indices.render_family, 0, &context->render_queue);
-        if((context->compute_family_id = queue_indices.compute_family) != U32_MAX) {
-            vkGetDeviceQueue(context->device, queue_indices.compute_family, 0, &context->compute_queue);
+        context->render_family_id = best_device_info->render_family;
+        vkGetDeviceQueue(context->device, best_device_info->render_family, 0, &context->render_queue);
+        if((context->compute_family_id = best_device_info->compute_family) != U32_MAX) {
+            vkGetDeviceQueue(context->device, best_device_info->compute_family, 0, &context->compute_queue);
         }
-        if((context->transfer_family_id = queue_indices.transfer_family) != U32_MAX) {
-            vkGetDeviceQueue(context->device, queue_indices.transfer_family, 0, &context->transfer_queue);
+        if((context->transfer_family_id = best_device_info->transfer_family) != U32_MAX) {
+            vkGetDeviceQueue(context->device, best_device_info->transfer_family, 0, &context->transfer_queue);
         }
     }
 
@@ -375,7 +397,7 @@ i32 vulkanRun(const VulkanInfo* info) {
         MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_CREATE_CONTEXT, "failed to init vulkan");
     }
     /* init vram arena */
-    if(MSG_IS_ERROR(vramInit(&vulkan_context))) {
+    if(MSG_IS_ERROR(vramArenaInit(&vulkan_context))) {
         MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_INIT_VRAM_ARENA, "failed to init vulkan");
     }
     
@@ -383,7 +405,7 @@ i32 vulkanRun(const VulkanInfo* info) {
         MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_RENDER_RUN, "failed to run render");
     }
 
-    vramTemrinate();
+    vramArenaTemrinate();
 
     /* dont forget to destroy vulkan objects */
     vulkanDeleteContext(&vulkan_context);

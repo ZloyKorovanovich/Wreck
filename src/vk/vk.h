@@ -6,8 +6,15 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
+typedef enum {
+    DEVICE_TYPE_NONE = 0,
+    DEVICE_TYPE_DESCRETE = 1,
+    DEVICE_TYPE_INTEGRATED = 2
+} DeviceType;
+
 typedef struct {
     VkDevice device;
+    DeviceType device_type;
     /* extension functions */
     PFN_vkCmdBeginRenderingKHR cmd_begin_rendering_khr;
     PFN_vkCmdEndRenderingKHR cmd_end_rendering_khr;
@@ -30,15 +37,15 @@ typedef struct {
     PFN_vkDestroyDebugUtilsMessengerEXT ext_destroy_debug_utils_messenger;
 } VulkanContext;
 
-i32 renderRun(const VulkanContext* vulkan_context, const RenderSettings* settings, msg_callback_pfn msg_callback);
+i32 renderRun(const VulkanContext* vulkan_context, const RenderSettings* settings, MsgCallback_pfn msg_callback);
 
 
 /* creates vram arena */
-i32 vramInit(const VulkanContext* vulkan_context);
+i32 vramArenaInit(const VulkanContext* vulkan_context);
 /* destroys vram arena */
-void vramTemrinate(void);
+void vramArenaTemrinate(void);
 /* allocate on vram arena */
-VkDeviceMemory vramAllocate(const VkMemoryRequirements* requirements, u32 positive_flags, u32 negative_flags);
+VkDeviceMemory vramArenaAllocate(const VkMemoryRequirements* requirements, u32 positive_flags, u32 negative_flags);
 
 #endif
 

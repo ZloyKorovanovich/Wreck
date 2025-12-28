@@ -1,7 +1,3 @@
-[[vk::binding(1, 0)]] cbuffer UniformBuffer {
-    float4 screen_params;
-};
-
 static float3 positions[3] = {
     float3( 0.5, -0.5, 0.0),
     float3(-0.5, -0.5, 0.0),
@@ -21,7 +17,7 @@ struct Interpolators {
 
 Interpolators vertexMain(uint vertex_id : SV_VERTEXID) {
     Interpolators output = (Interpolators)0;
-    output.position_cs = float4(positions[vertex_id].xy * screen_params.xy, 1.0, 1);
+    output.position_cs = float4(positions[vertex_id].xy, 1.0, 1);
     output.color = float4(colors[vertex_id], 1);
     return output;
 }

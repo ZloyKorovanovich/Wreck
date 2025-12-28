@@ -4,6 +4,9 @@
 typedef struct {
     f32 screen_params[4];
 } UniformBuffer;
+typedef struct {
+    f32 positions[3 * 3];
+} VertexBuffer;
 
 b32 msgCallback(i32 msg_code, const char* msg) {
     /* if message is error we stop */
@@ -49,18 +52,14 @@ i32 main(i32 argc, char** argv) {
             (RenderBinding) {
                 .binding = 0, .set = 0, 
                 .type = RENDER_BINDING_TYPE_UNIFORM_BUFFER,
-                .usage = RENDER_BINDING_USAGE_HOST_DEVICE,
                 .size = sizeof(UniformBuffer),
-                .frame_batch = &uniformBufferWrite,
-                //.initial_batch = &uniformBufferWrite
+                .frame_batch = &uniformBufferWrite
             },
             (RenderBinding) {
                 .binding = 1, .set = 0, 
                 .type = RENDER_BINDING_TYPE_UNIFORM_BUFFER,
-                .usage = RENDER_BINDING_USAGE_HOST_DEVICE,
                 .size = sizeof(UniformBuffer),
-                .frame_batch = &uniformBuffer1Write,
-                //.initial_batch = &uniformBufferWrite
+                .frame_batch = &uniformBuffer1Write
             }
         },
         .binding_count = 2,
@@ -95,4 +94,3 @@ i32 main(i32 argc, char** argv) {
     }
     return 0;
 }
-
