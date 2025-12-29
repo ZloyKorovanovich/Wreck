@@ -64,6 +64,7 @@ i32 main(i32 argc, char** argv) {
                 .binding = 0, .set = 0, 
                 .type = RENDER_BINDING_TYPE_UNIFORM_BUFFER,
                 .size = sizeof(UniformBuffer),
+                .initial_batch = &uniformBufferWrite,
                 .frame_batch = &uniformBufferWrite
             },
             (RenderBinding) {
@@ -89,6 +90,7 @@ i32 main(i32 argc, char** argv) {
             }
         },
         .node_count = 2,
+        .start_callback = &renderUpdate,
         .update_callback = &renderUpdate
     };
     /* fill everything */

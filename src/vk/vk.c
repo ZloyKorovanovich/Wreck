@@ -335,6 +335,7 @@ i32 vulkanCreateContext(const VulkanInfo* info, VulkanContext* context) {
         /* get physical device params and create device */
         context->physical_device = best_device_info->device;
         context->device_type = best_device_info->type;
+        //context->device_type = DEVICE_TYPE_INTEGRATED;
         if(vkCreateDevice(context->physical_device, &device_info, NULL, &context->device) != VK_SUCCESS) {
             MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_CREATE_DEVICE, "failed to create vulkan device");
         }

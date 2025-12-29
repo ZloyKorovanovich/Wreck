@@ -168,6 +168,7 @@ typedef struct {
 } RenderUpdateContext;
 
 typedef void (*RenderUpdate_pfn)(const RenderUpdateContext* render_context);
+typedef void (*RenderStart_pfn)(const RenderUpdateContext* render_context);
 
 /* settings of render in vulkan */
 typedef struct {
@@ -175,6 +176,7 @@ typedef struct {
     const RenderNode* nodes;
     u32 binding_count;
     u32 node_count;
+    RenderStart_pfn start_callback;
     RenderUpdate_pfn update_callback;
 } RenderSettings;
 
