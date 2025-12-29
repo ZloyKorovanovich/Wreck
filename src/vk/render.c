@@ -28,6 +28,7 @@ typedef struct {
     VkShaderModule vertex_shader;
     VkShaderModule fragment_shader;
     VkShaderModule compute_shader;
+    RenderDraw_pfn draw_callback;
 } RenderNodeInternal;
 
 typedef struct {
@@ -62,8 +63,9 @@ typedef struct {
 
 typedef struct {
     RenderNodeInternal* render_nodes; /* allocated on heap */
+    VkImageMemoryBarrier* image_barriers;
     u32 render_nodes_count;
-} RenderExecuteContext;
+} RenderPipelineContext;
 
 /* local context available in scope of that file */
 typedef struct {
@@ -82,7 +84,7 @@ typedef struct {
     VkCommandPool command_pool;
     /* descriptors */
     RenderBindingContext* binding_context;
-    RenderExecuteContext* execute_context;
+    RenderPipelineContext* pipeline_context;
 } RenderContext;
 
 
@@ -245,8 +247,8 @@ b32 createGraphicsPipeline(VkDevice device, VkFormat color_format, VkFormat dept
     return TRUE;
 }
 
-i32 createExecuteContext(const VulkanContext* vulkan_context, const RenderSettings* settings, const RenderContext* render_context, MsgCallback_pfn msg_callback, RenderExecuteContext* execute_context) {
-    *execute_context = (RenderExecuteContext){0};
+i32 createPipelineContext(const VulkanContext* vulkan_context, const RenderSettings* settings, const RenderContext* render_context, MsgCallback_pfn msg_callback, RenderPipelineContext* pipeline_context) {
+    *pipeline_context = (RenderPipelineContext){0};
 
     if(!settings || settings->node_count == 0) {
         return MSG_CODE_SUCCESS;
@@ -256,6 +258,9 @@ i32 createExecuteContext(const VulkanContext* vulkan_context, const RenderSettin
         const u32 node_count = settings->node_count;
         for(u32 i = 0; i < node_count; i++) {
             const RenderNode* node = &settings->nodes[i];
+            if(!node->draw_callback) {
+                MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RENDER_NODE_INVALID, "graphics render null draw callback");
+            }
             /* validate types and shaders */
             if(node->type == RENDER_NODE_TYPE_GRAPHICS) {
                 if(!node->vertex_shader || !node->fragment_shader || node->compute_shader) {
@@ -283,20 +288,21 @@ i32 createExecuteContext(const VulkanContext* vulkan_context, const RenderSettin
             MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL, "failed to allocate shader read buffer");
         }
         /* allocate pipeline nodes buffer */
-        if(!(execute_context->render_nodes = malloc(sizeof(RenderNodeInternal) * settings->node_count))) {
+        if(!(pipeline_context->render_nodes = malloc(sizeof(RenderNodeInternal) * settings->node_count))) {
             MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_BUFFER_MALLOC_FAIL, "failed to allocate pipeline nodes buffer");
         }
 
         /* create internal render nodes */
-        const u32 node_count = execute_context->render_nodes_count = settings->node_count;
+        const u32 node_count = pipeline_context->render_nodes_count = settings->node_count;
         for(u32 i = 0; i < node_count; i++) {
             const RenderNode* node = &settings->nodes[i];
-            RenderNodeInternal* internal_node = &execute_context->render_nodes[i];
+            RenderNodeInternal* internal_node = &pipeline_context->render_nodes[i];
             
             if(node->type == RENDER_NODE_TYPE_GRAPHICS) {
                 *internal_node = (RenderNodeInternal) {
                     .type = RENDER_NODE_TYPE_GRAPHICS,
-                    .pipeline_layout = render_context->binding_context->full_pipeline_layout ? render_context->binding_context->full_pipeline_layout : render_context->binding_context->empty_pipeline_layout
+                    .pipeline_layout = render_context->binding_context->full_pipeline_layout ? render_context->binding_context->full_pipeline_layout : render_context->binding_context->empty_pipeline_layout,
+                    .draw_callback = node->draw_callback
                 };
                 if(!(internal_node->vertex_shader = createShaderModule(vulkan_context->device, node->vertex_shader, &read_buffer))) {
                     MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_SHADER_MODULE_CREATE, "failed to create vertex shader module");
@@ -319,22 +325,22 @@ i32 createExecuteContext(const VulkanContext* vulkan_context, const RenderSettin
     return MSG_CODE_SUCCESS;
 }
 
-void destroyExecuteContext(const VulkanContext* vulkan_context, RenderExecuteContext* execute_context) {
-    const u32 render_node_count = execute_context->render_nodes_count;
+void destroyPipelineContext(const VulkanContext* vulkan_context, RenderPipelineContext* pipeline_context) {
+    const u32 render_node_count = pipeline_context->render_nodes_count;
     /* destroy pipelines and shader modules */
     for(u32 i = 0; i < render_node_count; i++) {
-        if(execute_context->render_nodes[i].type == RENDER_NODE_TYPE_GRAPHICS) {
-            vkDestroyPipeline(vulkan_context->device, execute_context->render_nodes[i].pipeline, NULL);
-            vkDestroyShaderModule(vulkan_context->device, execute_context->render_nodes[i].vertex_shader, NULL);
-            vkDestroyShaderModule(vulkan_context->device, execute_context->render_nodes[i].fragment_shader, NULL);
+        if(pipeline_context->render_nodes[i].type == RENDER_NODE_TYPE_GRAPHICS) {
+            vkDestroyPipeline(vulkan_context->device, pipeline_context->render_nodes[i].pipeline, NULL);
+            vkDestroyShaderModule(vulkan_context->device, pipeline_context->render_nodes[i].vertex_shader, NULL);
+            vkDestroyShaderModule(vulkan_context->device, pipeline_context->render_nodes[i].fragment_shader, NULL);
         }
-        if(execute_context->render_nodes[i].type == RENDER_NODE_TYPE_COMPUTE) {
-            vkDestroyPipeline(vulkan_context->device, execute_context->render_nodes[i].pipeline, NULL);
-            vkDestroyShaderModule(vulkan_context->device, execute_context->render_nodes[i].compute_shader, NULL);
+        if(pipeline_context->render_nodes[i].type == RENDER_NODE_TYPE_COMPUTE) {
+            vkDestroyPipeline(vulkan_context->device, pipeline_context->render_nodes[i].pipeline, NULL);
+            vkDestroyShaderModule(vulkan_context->device, pipeline_context->render_nodes[i].compute_shader, NULL);
         }
     }
-    free(execute_context->render_nodes);
-    *execute_context = (RenderExecuteContext){0};
+    free(pipeline_context->render_nodes);
+    *pipeline_context = (RenderPipelineContext){0};
 }
 
 
@@ -856,8 +862,8 @@ i32 renderOnWindowResize(const VulkanContext* vulkan_context, MsgCallback_pfn ms
     return MSG_CODE_SUCCESS;
 }
 
-/* runs main render loop */
-i32 renderLoop(const VulkanContext* vulkan_context, MsgCallback_pfn msg_callback, RenderContext* render_context) {
+
+i32 renderLoop_DeviceTypeDescrete(const VulkanContext* vulkan_context, MsgCallback_pfn msg_callback, RenderContext* render_context) {
     typedef struct {
         VkSemaphore image_submit_semaphores[MAX_SWAPCHAIN_IMAGE_COUNT];
         VkSemaphore image_available_semaphore;
@@ -868,12 +874,11 @@ i32 renderLoop(const VulkanContext* vulkan_context, MsgCallback_pfn msg_callback
         VkImageMemoryBarrier image_bottom_barrier;
     } SyncObjects;
 
-    SyncObjects sync_objects = (SyncObjects){0};
-    VkCommandBuffer command_buffer = NULL;
-    VkCommandBuffer transfer_command_buffer = NULL;
+    SyncObjects sync_objects;
+    VkCommandBuffer command_buffer;
+    VkCommandBuffer transfer_command_buffer;
 
-    /* @(FIX): add comments */
-    /* COMMAND BUFFER */ {
+    /* COMMAND BUFFERS */ {
         VkCommandBufferAllocateInfo cmbuffers_info = (VkCommandBufferAllocateInfo) {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             .commandBufferCount = 2,
@@ -887,7 +892,7 @@ i32 renderLoop(const VulkanContext* vulkan_context, MsgCallback_pfn msg_callback
         command_buffer = command_buffers[0];
         transfer_command_buffer = command_buffers[1];
     }
-
+    
     /* SYNC OBJECTS */ {
         VkSemaphoreCreateInfo semaphore_info = (VkSemaphoreCreateInfo) {
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
@@ -917,45 +922,17 @@ i32 renderLoop(const VulkanContext* vulkan_context, MsgCallback_pfn msg_callback
         if(vkCreateFence(vulkan_context->device, &fence_info, NULL, &sync_objects.transfer_fence) != VK_SUCCESS) {
             MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_FENCE_CREATE, "failed to create transfer fence");
         }
-
-        /* barriers */
-        sync_objects.image_top_barrier = (VkImageMemoryBarrier) {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            .subresourceRange = {
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            }
-        };
-        sync_objects.image_bottom_barrier = (VkImageMemoryBarrier) {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            .subresourceRange = {
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            }
-        };
     }
 
-    /* render loop itself */
-    while (!glfwWindowShouldClose(vulkan_context->window)) {
+    while(!glfwWindowShouldClose(vulkan_context->window)) {
         glfwPollEvents();
-        u32 image_id = U32_MAX;
+
+        u32 render_image_id = U32_MAX;
 
         /* AQUIRE */ {
             /* wait untill previous frame finishes */
             vkWaitForFences(vulkan_context->device, 1, &sync_objects.frame_fence, VK_TRUE, U64_MAX);
-            VkResult image_acquire_result = vkAcquireNextImageKHR(vulkan_context->device, render_context->swapchain, U64_MAX, sync_objects.image_available_semaphore, NULL, &image_id);
+            VkResult image_acquire_result = vkAcquireNextImageKHR(vulkan_context->device, render_context->swapchain, U64_MAX, sync_objects.image_available_semaphore, NULL, &render_image_id);
 
             /* check if frambuffer should resize */
             if(image_acquire_result == VK_ERROR_OUT_OF_DATE_KHR || image_acquire_result == VK_SUBOPTIMAL_KHR) {
@@ -966,57 +943,42 @@ i32 renderLoop(const VulkanContext* vulkan_context, MsgCallback_pfn msg_callback
             }
             vkResetFences(vulkan_context->device, 1, &sync_objects.frame_fence);
         }
-        
+
+        /* begin command buffer */
         const VkCommandBufferBeginInfo command_buffer_begin_info = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
         };
         vkResetCommandBuffer(command_buffer, 0);
         vkBeginCommandBuffer(command_buffer, &command_buffer_begin_info);
 
-        const VkImageMemoryBarrier image_top_barrier = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            .subresourceRange = {
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-            .image = render_context->swapchain_images[image_id]
-        };
-        const VkImageMemoryBarrier image_bottom_barrier = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            .subresourceRange = {
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-            .image = render_context->swapchain_images[image_id]
-        };
+        /* NODE RENDERING */ {
+            /* transit image to be used as attachment */
+            const VkImageMemoryBarrier image_top_barrier = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .subresourceRange = {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+                .image = render_context->swapchain_images[render_image_id]
+            };
+            vkCmdPipelineBarrier(
+                command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 
+                0, 0, NULL, 0, NULL, 1, &image_top_barrier
+            );
 
-        /* image transition to rendering */
-        
-        vkCmdPipelineBarrier(
-            command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 
-            0, 0, NULL, 0, NULL, 1, &image_top_barrier
-        );
-
-        /* SCREEN GRAPHICS */ {
             /* screen attachments */
             const VkRenderingAttachmentInfoKHR screen_color_attachment = {
                 .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
                 .imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL_KHR,
                 .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
                 .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-                .imageView = render_context->swapchain_image_views[image_id]
+                .imageView = render_context->swapchain_image_views[render_image_id]
             };
             const VkRenderingAttachmentInfoKHR screen_depth_attachment = {
                 .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
@@ -1043,8 +1005,8 @@ i32 renderLoop(const VulkanContext* vulkan_context, MsgCallback_pfn msg_callback
                 }
             };
             vulkan_context->cmd_begin_rendering_khr(command_buffer, &rendering_info);
-            
-            /* set screen viewport & scissor */
+
+            /* set dynamic state */
             VkViewport viewport = {
                 .width = render_context->swapchain_params.extent.width,
                 .height = render_context->swapchain_params.extent.height,
@@ -1055,28 +1017,48 @@ i32 renderLoop(const VulkanContext* vulkan_context, MsgCallback_pfn msg_callback
             };
             vkCmdSetViewport(command_buffer, 0, 1, &viewport);
             vkCmdSetScissor(command_buffer, 0, 1, &rendering_info.renderArea);
-        
-            const u32 render_node_count = render_context->execute_context->render_nodes_count;
+
+            /* draw actual nodes */
+            const u32 render_node_count = render_context->pipeline_context->render_nodes_count;
+            const RenderNodeInternal* render_nodes = render_context->pipeline_context->render_nodes;
             for(u32 i = 0; i < render_node_count; i++) {
-                const RenderNodeInternal* pipeline_node = &render_context->execute_context->render_nodes[i];
-                if(pipeline_node->type == RENDER_NODE_TYPE_GRAPHICS) {
-                    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_node->pipeline);
-                    vkCmdDraw(command_buffer, 3, 1, 0, 0);
-                    continue;
+                const RenderNodeInternal* render_node = &render_nodes[i];
+                if(render_node->type == RENDER_NODE_TYPE_GRAPHICS) {
+                    RenderDrawInfo* draw_infos = NULL;
+                    u32 draw_count = 0;
+                    render_node->draw_callback(&draw_infos, &draw_count);
+
+                    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, render_node->pipeline);
+                    for(u32 j = 0; j < draw_count; j++) {
+                        vkCmdDraw(command_buffer, draw_infos[j].vertex_count, draw_infos[j].instance_count, 0, 0);
+                    }
                 }
             }
 
             vulkan_context->cmd_end_rendering_khr(command_buffer);
+            /* transition to present */
+            const VkImageMemoryBarrier image_bottom_barrier = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                .subresourceRange = {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+                .image = render_context->swapchain_images[render_image_id]
+            };
+            vkCmdPipelineBarrier(
+                command_buffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 
+                0, 0, NULL, 0, NULL, 1, &image_bottom_barrier
+            );
         }
 
-        /* image transition to presentation */
-        vkCmdPipelineBarrier(
-            command_buffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 
-            0, 0, NULL, 0, NULL, 1, &image_bottom_barrier
-        );
-
         vkEndCommandBuffer(command_buffer);
-        
+
         /* SUBMIT */ {
             /* sunmit work for render queue */
             VkSubmitInfo submit_info = {
@@ -1085,7 +1067,7 @@ i32 renderLoop(const VulkanContext* vulkan_context, MsgCallback_pfn msg_callback
                 .pWaitSemaphores = &sync_objects.image_available_semaphore,
                 .pWaitDstStageMask = (const VkPipelineStageFlags[]){VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT},
                 .signalSemaphoreCount = 1,
-                .pSignalSemaphores = &sync_objects.image_submit_semaphores[image_id],
+                .pSignalSemaphores = &sync_objects.image_submit_semaphores[render_image_id],
                 .commandBufferCount = 1,
                 .pCommandBuffers = &command_buffer
             };
@@ -1094,10 +1076,10 @@ i32 renderLoop(const VulkanContext* vulkan_context, MsgCallback_pfn msg_callback
             VkPresentInfoKHR present_info = (VkPresentInfoKHR) {
                 .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
                 .waitSemaphoreCount = 1,
-                .pWaitSemaphores = &sync_objects.image_submit_semaphores[image_id],
+                .pWaitSemaphores = &sync_objects.image_submit_semaphores[render_image_id],
                 .swapchainCount = 1,
                 .pSwapchains = &render_context->swapchain,
-                .pImageIndices = &image_id,
+                .pImageIndices = &render_image_id,
                 .pResults = NULL
             };
             VkResult present_result = vkQueuePresentKHR(vulkan_context->render_queue, &present_info);
@@ -1178,7 +1160,7 @@ i32 renderCreateContext(const VulkanContext* vulkan_context, const RenderSetting
         MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RENDER_BINDING_CONTEXT_CREATE, "failed to create render binding context");
     }
 
-    if(MSG_IS_ERROR(createExecuteContext(vulkan_context, settings, render_context, msg_callback, render_context->execute_context))) {
+    if(MSG_IS_ERROR(createPipelineContext(vulkan_context, settings, render_context, msg_callback, render_context->pipeline_context))) {
         MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RENDER_EXECUTE_CONTEXT_CREATE, "failed to create render execute context");
     }
 
@@ -1203,7 +1185,7 @@ void renderDestroyContext(const VulkanContext* vulkan_context, RenderContext* re
         vkDestroyCommandPool(vulkan_context->device, render_context->command_pool, NULL);
     }
 
-    destroyExecuteContext(vulkan_context, render_context->execute_context);
+    destroyPipelineContext(vulkan_context, render_context->pipeline_context);
     destroyBindingContext(vulkan_context, render_context->binding_context);
 
     /* SWAPCHAIN IMAGES */ {
@@ -1220,15 +1202,17 @@ void renderDestroyContext(const VulkanContext* vulkan_context, RenderContext* re
 
 /* render main func */
 i32 renderRun(const VulkanContext* vulkan_context, const RenderSettings* settings, MsgCallback_pfn msg_callback) {
-    static RenderExecuteContext s_execute_context = (RenderExecuteContext){0};
+    static RenderPipelineContext s_pipeline_context = (RenderPipelineContext){0};
     static RenderBindingContext s_binding_context = (RenderBindingContext){0};
-    static RenderContext s_render_context = (RenderContext){.binding_context = &s_binding_context, .execute_context = &s_execute_context};
+    static RenderContext s_render_context = (RenderContext){.binding_context = &s_binding_context, .pipeline_context = &s_pipeline_context};
     if(MSG_IS_ERROR(renderCreateContext(vulkan_context, settings, msg_callback, &s_render_context))) {
         MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_RENDER_CONTEXT, "failed to create render context");
     }
 
-    if(MSG_IS_ERROR(renderLoop(vulkan_context, msg_callback, &s_render_context))) {
-        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RENDER_LOOP_FAIL, "vulkan render loop error");
+    if(vulkan_context->device_type == DEVICE_TYPE_DESCRETE) {
+        if(MSG_IS_ERROR(renderLoop_DeviceTypeDescrete(vulkan_context, msg_callback, &s_render_context))) {
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RENDER_LOOP_FAIL, "vulkan render loop error");
+        }
     }
 
     renderDestroyContext(vulkan_context, &s_render_context);

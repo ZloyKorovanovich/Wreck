@@ -145,6 +145,13 @@ typedef enum {
     RENDER_NODE_TYPE_COMPUTE = 2
 } RenderNodeType;
 
+typedef struct {
+    u32 instance_count;
+    u32 vertex_count;
+} RenderDrawInfo;
+
+typedef void (*RenderDraw_pfn)(RenderDrawInfo** infos, u32* count);
+
 /* describes render node, in other words render pipeline */
 typedef struct {
     RenderNodeType type;
@@ -152,6 +159,7 @@ typedef struct {
     const char* vertex_shader;
     const char* fragment_shader;
     const char* compute_shader;
+    RenderDraw_pfn draw_callback;
 } RenderNode;
 
 typedef struct {

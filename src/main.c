@@ -45,6 +45,17 @@ void uniformBuffer1Write(void* ptr) {
     };
 }
 
+void drawTriangleProcedural(RenderDrawInfo** infos, u32* count) {
+    static RenderDrawInfo s_draw_infos[1] = {
+        (RenderDrawInfo) {
+            .instance_count = 1,
+            .vertex_count = 3
+        }
+    };
+    *infos = s_draw_infos;
+    *count = 1;
+}
+
 
 i32 main(i32 argc, char** argv) {
     const RenderSettings render_settings = {
@@ -67,12 +78,14 @@ i32 main(i32 argc, char** argv) {
             (RenderNode) {
                 .type = RENDER_NODE_TYPE_GRAPHICS,
                 .vertex_shader = "out/data/triangle_v.spv",
-                .fragment_shader = "out/data/triangle_f.spv"
+                .fragment_shader = "out/data/triangle_f.spv",
+                .draw_callback = &drawTriangleProcedural
             },
             (RenderNode) {
                 .type = RENDER_NODE_TYPE_GRAPHICS,
                 .vertex_shader = "out/data/triangle_flip_v.spv",
-                .fragment_shader = "out/data/triangle_f.spv"
+                .fragment_shader = "out/data/triangle_f.spv",
+                .draw_callback = &drawTriangleProcedural
             }
         },
         .node_count = 2,
