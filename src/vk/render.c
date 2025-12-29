@@ -946,6 +946,7 @@ i32 renderLoop(const VulkanContext* vulkan_context, MsgCallback_pfn msg_callback
     SyncObjects sync_objects = (SyncObjects){0};
     VkCommandBuffer command_buffers[COMMAND_BUFFER_COUNT] = {0};
     void* memory_map = NULL;
+    b32 should_resize = FALSE;
 
     /* COMMAND BUFFERS */ {
         VkCommandBufferAllocateInfo cmbuffers_info = (VkCommandBufferAllocateInfo) {
@@ -1111,7 +1112,6 @@ i32 renderLoop(const VulkanContext* vulkan_context, MsgCallback_pfn msg_callback
         }
     }
 
-
     while(!glfwWindowShouldClose(vulkan_context->window)) {
         glfwPollEvents();
 
@@ -1181,6 +1181,15 @@ i32 renderLoop(const VulkanContext* vulkan_context, MsgCallback_pfn msg_callback
             _skip_frame_batch: {}
         }
 
+        _render_start: {}
+
+        if(should_resize) {
+            if(MSG_IS_ERROR(renderOnWindowResize(vulkan_context, msg_callback, render_context))) {
+                MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RESIZE_FAIL, "error occured during window resize in the beginning of loop");
+            }
+            should_resize = FALSE;
+        }
+
         /* AQUIRE */ {
             /* wait untill previous frame finishes */
             vkWaitForFences(vulkan_context->device, sync_objects.fence_count, sync_objects.fences, VK_TRUE, U64_MAX);
@@ -1188,10 +1197,15 @@ i32 renderLoop(const VulkanContext* vulkan_context, MsgCallback_pfn msg_callback
 
             /* check if frambuffer should resize */
             if(image_acquire_result == VK_ERROR_OUT_OF_DATE_KHR || image_acquire_result == VK_SUBOPTIMAL_KHR) {
-                if(MSG_IS_ERROR(renderOnWindowResize(vulkan_context, msg_callback, render_context))) {
-                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RESIZE_FAIL, "error occured during window resize in the beginning of loop");
-                }
-                continue;
+
+                should_resize = TRUE;
+                const VkSemaphoreSignalInfo unsignal_info = {
+                    .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
+                    .semaphore = sync_objects.image_available_semaphore,
+                    .value = 0
+                };
+                vkSignalSemaphore(vulkan_context->device, &unsignal_info);
+                goto _render_start;
             }
             vkResetFences(vulkan_context->device, 1, &sync_objects.fences[FENCE_FRAME_ID]);
         }
@@ -1340,10 +1354,7 @@ i32 renderLoop(const VulkanContext* vulkan_context, MsgCallback_pfn msg_callback
             };
             VkResult present_result = vkQueuePresentKHR(vulkan_context->render_queue, &present_info);
             if(present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR) {
-                if(MSG_IS_ERROR(renderOnWindowResize(vulkan_context, msg_callback, render_context))) {
-                    MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_RESIZE_FAIL, "error occured during window resize in the end of loop");
-                }
-                continue;
+                should_resize = TRUE;
             }
         }
     }
