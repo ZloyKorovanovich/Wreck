@@ -1,4 +1,4 @@
-#include "vk.h"
+#include "vulkan.h"
 
 /* settings for debug utils messenger callback */
 const char* c_debug_layer_name = "VK_LAYER_KHRONOS_validation";
@@ -27,6 +27,7 @@ const char* c_required_device_extension_names[3] = {
     VK_KHR_SPIRV_1_4_EXTENSION_NAME
 };
 
+
 /* used to get physical device info only once */
 typedef struct {
     u32 score;
@@ -35,6 +36,8 @@ typedef struct {
     u32 compute_family;
     u32 transfer_family;
     VkPhysicalDevice device;
+    char device_name[VK_MAX_DRIVER_NAME_SIZE];
+    u32 device_id;
 } DeviceInfo;
 
 
@@ -81,15 +84,15 @@ b32 vulkanCheckPhysicalDevice(VkPhysicalDevice device, const char** required_ext
         /* search for queue indices */
         device_info->render_family = device_info->compute_family = device_info->transfer_family = U32_MAX;
         for(u32 i = 0; i < family_property_count; i++) {
-            if((VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT) == (QUEUE_FLAGS_MASK & family_properties[i].queueFlags)) {
+            if(device_info->render_family == U32_MAX && (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT) == (QUEUE_FLAGS_MASK & family_properties[i].queueFlags)) {
                 device_info->render_family = i;
                 continue;
             }
-            if(VK_QUEUE_COMPUTE_BIT == (QUEUE_FLAGS_MASK & family_properties[i].queueFlags)) {
+            if(device_info->compute_family == U32_MAX && (VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT) == (QUEUE_FLAGS_MASK & family_properties[i].queueFlags)) {
                 device_info->compute_family = i;
                 continue;
             }
-            if(VK_QUEUE_TRANSFER_BIT == (QUEUE_FLAGS_MASK & family_properties[i].queueFlags)) {
+            if(device_info->transfer_family == U32_MAX && (VK_QUEUE_TRANSFER_BIT) == (QUEUE_FLAGS_MASK & family_properties[i].queueFlags)) {
                 device_info->transfer_family = i;
                 continue;
             }
@@ -109,12 +112,80 @@ b32 vulkanCheckPhysicalDevice(VkPhysicalDevice device, const char** required_ext
             device_info->score += 500;
             device_info->type = DEVICE_TYPE_INTEGRATED;
         }
+
+        strcpy(device_info->device_name, device_properties.deviceName);
+        device_info->device_id = device_properties.deviceID;
     }
 
     return TRUE;
 }
 
-i32 vulkanCreateContext(const VulkanInfo* info, VulkanContext* context) {
+
+VramAllocation* allocateVram(VulkanContext* vulkan_context, const VramAllocationInfo* info) {
+    if(vulkan_context->vram_allocation_count >= MAX_VRAM_ALLOCATIONS || info->size == FALSE || info->memory_type_flags == 0) return NULL;
+
+    /* find free slot for record */
+    VramAllocation* allocation_slot = NULL;
+    for(u32 i = 0; i < MAX_VRAM_ALLOCATIONS; i++) {
+        if(vulkan_context->vram_allocations[i].size == 0) {
+            allocation_slot = &vulkan_context->vram_allocations[i];
+            break;
+        }
+    }
+
+    u32 memory_id = U32_MAX;
+    u32 heap_id = U32_MAX;
+    VkPhysicalDeviceMemoryProperties* memory_properties = &vulkan_context->memory_properties;
+    const u32 memory_type_count = memory_properties->memoryTypeCount;
+    for(u32 i = 0; i < memory_type_count; i++) {
+        VkMemoryType memory_type = memory_properties->memoryTypes[i];
+        if(
+            ((memory_type.propertyFlags & info->positive_flags) == info->positive_flags) && 
+            !(memory_type.propertyFlags & info->negative_flags) &&
+            (memory_type.propertyFlags & info->memory_type_flags) &&
+            memory_properties->memoryHeaps[memory_type.heapIndex].size > info->size
+        ) {
+            memory_id = i;
+            heap_id = memory_type.heapIndex;
+            memory_properties->memoryHeaps[memory_type.heapIndex].size -= info->size;
+            goto _found_memory; 
+        }
+    }
+    //_not_found_memory_id:
+    return NULL;
+
+    _found_memory: {
+        /* allocation call */
+        VkMemoryAllocateInfo alloc_info = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .memoryTypeIndex = memory_id,
+            .allocationSize = info->size
+        };
+        VkDeviceMemory memory = NULL;
+        if(vkAllocateMemory(vulkan_context->device, &alloc_info, NULL, &memory) != VK_SUCCESS) {
+            return FALSE;
+        }
+        *allocation_slot = (VramAllocation) {
+            .size = info->size,
+            .heap_id = heap_id,
+            .type_id = memory_id,
+            .memory = memory
+        };
+        vulkan_context->vram_allocation_count++;
+        return allocation_slot;
+    }
+}
+
+void freeVram(VulkanContext* vulkan_context, VramAllocation* allocation) {
+    if(allocation->size == 0) return;
+    vkFreeMemory(vulkan_context->device, allocation->memory, NULL);
+    vulkan_context->memory_properties.memoryHeaps[allocation->heap_id].size += allocation->size;
+    *allocation = (VramAllocation){0};
+    vulkan_context->vram_allocation_count--;
+}
+
+
+i32 createVulkanContext(const VulkanContextInfo* info, MsgCallback_pfn msg_callback, VulkanContext** vulkan_context) {
     /* ContextCreateBuffer params to control heap allocation size*/
     #define MAX_REQUIRED_EXT_COUNT 128
     #define MAX_INSTANCE_EXT_COUNT 512
@@ -135,21 +206,47 @@ i32 vulkanCreateContext(const VulkanInfo* info, VulkanContext* context) {
         u32 suitable_device_count;
     } ContextCreateBuffer;
 
-    ContextCreateBuffer* context_create_buffer = (ContextCreateBuffer*)malloc(sizeof(ContextCreateBuffer)); /* ContextCreateBuffer is freed in the end of this function */
-    *context_create_buffer = (ContextCreateBuffer){0};
-    if(!context_create_buffer) {
-        MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_CONTEXT_CREATE_BUFFER_MALLOC, "failed to allocate context buffer");
+    char log_message[512];
+    ContextCreateBuffer* context_create_buffer;
+
+    VulkanContext* context = malloc(sizeof(VulkanContext));
+    if(!vulkan_context) {
+        MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CONTEXT_CREATE_BUFFER_MALLOC, "failed to allocate vulkan context");
+    }
+    *context = (VulkanContext){0};
+
+
+    /* ALLOCATE CONTEXT BUFFER */ {
+        context_create_buffer = (ContextCreateBuffer*)malloc(sizeof(ContextCreateBuffer)); /* ContextCreateBuffer is freed in the end of this function */
+        if(!context_create_buffer) {
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CONTEXT_CREATE_BUFFER_MALLOC, "failed to allocate context buffer");
+        }
+        *context_create_buffer = (ContextCreateBuffer){0};
     }
 
+    
     /* GLFW */ {
         if(!glfwInit()) {
-            MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_GLFW_INIT, "failed to init glfw!");
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_GLFW_INIT, "failed to init glfw!");
         }
+        /* log glfw initialization */
+        MSG_CALLBACK_NO_TRACE(msg_callback, MSG_CODE_SUCCESS, "initialized glfw");
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API); /* detach from opengl context, so that vulkan can capture window */
         glfwWindowHint(GLFW_RESIZABLE, VULKAN_FLAG_WIN_RESIZE & info->flags ? GLFW_TRUE : GLFW_FALSE);
         if(!(context->window = glfwCreateWindow((i32)info->x, (i32)info->y, info->name, NULL, NULL))) {
-            MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_WINDOW_CREATE, "failed to create window!");
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_WINDOW_CREATE, "failed to create window!");
+        }
+
+        /* LOG */ {
+            /* make create window log */
+            strcpy(log_message, "created glfw window name: \"");
+            strcat(log_message, info->name);
+            strcat(log_message, "\" x: ");
+            strcat_u32(log_message, info->x);
+            strcat(log_message, " y: ");
+            strcat_u32(log_message, info->y);
+            MSG_CALLBACK_NO_TRACE(msg_callback, MSG_CODE_SUCCESS, log_message);
         }
     }
 
@@ -179,9 +276,8 @@ i32 vulkanCreateContext(const VulkanInfo* info, VulkanContext* context) {
                     goto _found_instance_ext;
                 }
             }
-            printf("%s\n", context_create_buffer->required_extension_names[i]);
             //_not_found_instance_ext:
-            MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_INSATNCE_EXTENSION_MISMATCH, "failed to match required extension to instance extensions");
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_INSATNCE_EXTENSION_MISMATCH, "failed to match required extension to instance extensions");
             _found_instance_ext: {}
         }
 
@@ -199,13 +295,16 @@ i32 vulkanCreateContext(const VulkanInfo* info, VulkanContext* context) {
                 }
             }
         //_not_found_layer:
-            MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_LAYERS_MISMATCH, "failed to match required layers");
+            strcpy(log_message, "failed to match required layer:");
+            strcat(log_message, c_debug_layer_name);
+            strcat(log_message, LOCATION_TRACE);
+            MSG_CALLBACK_NO_TRACE(msg_callback, MSG_CODE_ERROR_VK_LAYERS_MISMATCH, log_message);
         _found_layer: {}
         }
     }
 
     /* INSTANCE & DEBUG MESSENGER & SURFACE CREATION */ {
-        VkApplicationInfo app_info = {
+        const VkApplicationInfo app_info = {
             .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
             .pEngineName = ENGINE_NAME,
             .engineVersion = ENGINE_VERSION,
@@ -215,14 +314,14 @@ i32 vulkanCreateContext(const VulkanInfo* info, VulkanContext* context) {
         };
 
         /* used only if debug flag is enabled */
-        VkDebugUtilsMessengerCreateInfoEXT debug_utils_info = {
+        const VkDebugUtilsMessengerCreateInfoEXT debug_utils_info = {
             .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
             .pfnUserCallback = &validationDebugCallback,
             .messageSeverity = c_debug_message_severity,
             .messageType = c_debug_message_type
         };
 
-        VkInstanceCreateInfo instance_info = {
+        const VkInstanceCreateInfo instance_info = {
             .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
             .flags = 0,
             .pApplicationInfo = &app_info,
@@ -234,28 +333,51 @@ i32 vulkanCreateContext(const VulkanInfo* info, VulkanContext* context) {
         };
 
         if(vkCreateInstance(&instance_info, NULL, &context->instance) != VK_SUCCESS) {
-            MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_INSTANCE_CREATE, "failed to create vulkan instance");
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_INSTANCE_CREATE, "failed to create vulkan instance");
+        }
+
+        /* LOG */ {
+            /* log extensions */
+            strcpy(log_message, "vulkan instance extensions: {");
+            for(u32 i = 0; i < instance_info.enabledExtensionCount; i++) {
+                strcat(log_message, "\"");
+                strcat(log_message, instance_info.ppEnabledExtensionNames[i]);
+                strcat(log_message, "\"");
+            }
+            strcat(log_message,"}");
+            MSG_CALLBACK_NO_TRACE(msg_callback, MSG_CODE_SUCCESS, log_message);
+            /* log layers */
+            strcpy(log_message, "vulkan instance layers: {");
+            for(u32 i = 0; i < instance_info.enabledLayerCount; i++) {
+                strcat(log_message, "\"");
+                strcat(log_message, instance_info.ppEnabledLayerNames[i]);
+                strcat(log_message, "\"");
+            }
+            strcat(log_message, "}");
+            MSG_CALLBACK_NO_TRACE(msg_callback, MSG_CODE_SUCCESS, log_message);
         }
 
         /* create debug messenger if debug flag is set */
         if(info->flags & VULKAN_FLAG_DEBUG) {
             /* load ext functions for debug utils messenger */
             if(!(context->ext_create_debug_utils_messenger = (void*)vkGetInstanceProcAddr(context->instance, "vkCreateDebugUtilsMessengerEXT"))) {
-                MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_LOAD_PROC, "failed to load vkCreateDebugUtilsMessengerEXT");
+                MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_LOAD_PROC, "failed to load vkCreateDebugUtilsMessengerEXT");
             }
             if(!(context->ext_destroy_debug_utils_messenger = (void*)vkGetInstanceProcAddr(context->instance, "vkDestroyDebugUtilsMessengerEXT"))) {
-                MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_LOAD_PROC, "failed to load vkDestroyDebugUtilsMessengerEXT");
+                MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_LOAD_PROC, "failed to load vkDestroyDebugUtilsMessengerEXT");
             }
 
             /* actual creation of debug utils messenger */
             if(context->ext_create_debug_utils_messenger(context->instance, &debug_utils_info, NULL, &context->debug_messenger) != VK_SUCCESS) {
-                MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_DEBUG_MESSENGER_CREATE, "failed to load vulkan debug messenger");
+                MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_DEBUG_MESSENGER_CREATE, "failed to load vulkan debug messenger");
             }
+            /* log debug utils */
+            MSG_CALLBACK_NO_TRACE(msg_callback, MSG_CODE_SUCCESS, "created vulkan debug utils messenger");
         }
 
         /* create surface ASAP */
         if(glfwCreateWindowSurface(context->instance, context->window, NULL, &context->surface) != VK_SUCCESS) {
-            MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_SURFACE_CREATE, "failed to create vulkan surface");
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_SURFACE_CREATE, "failed to create vulkan surface");
         }
     }
 
@@ -276,7 +398,7 @@ i32 vulkanCreateContext(const VulkanInfo* info, VulkanContext* context) {
 
         /* if gpu suitable not found */
         if(context_create_buffer->suitable_device_count == 0) {
-            MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_FAILED_TO_FIND_GPU, "failed to find suitable gpu");
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_FAILED_TO_FIND_GPU, "failed to find suitable gpu");
         }
         /* select the best option */
         const DeviceInfo* best_device_info = context_create_buffer->suitable_device_infos;
@@ -284,6 +406,32 @@ i32 vulkanCreateContext(const VulkanInfo* info, VulkanContext* context) {
             if(best_device_info->score < context_create_buffer->suitable_device_infos[i].score) {
                 best_device_info = &context_create_buffer->suitable_device_infos[i];
             }
+        }
+
+        /* LOG DEVICE */ {
+            strcpy(log_message, "selected gpu name: ");
+            strcat(log_message, best_device_info->device_name);
+            strcat(log_message, " device id: ");
+            strcat_u32(log_message, best_device_info->device_id);
+            strcat(log_message, " device type: ");
+            strcat_u32(log_message, best_device_info->type);
+            strcat(log_message, " queues {");
+            strcat(log_message, " render: ");
+            strcat_u32(log_message, best_device_info->render_family);
+            strcat(log_message, " compute: ");
+            if(best_device_info->compute_family != U32_MAX) {
+                strcat_u32(log_message, best_device_info->compute_family);
+            } else {
+                strcat(log_message, "NO");
+            }
+            strcat(log_message, " transfer: ");
+            if(best_device_info->transfer_family != U32_MAX) {
+                strcat_u32(log_message, best_device_info->transfer_family);
+            } else {
+                strcat(log_message, "NO");
+            }
+            strcat(log_message, "}");
+            MSG_CALLBACK_NO_TRACE(msg_callback, MSG_CODE_SUCCESS, log_message);
         }
 
         /* now we need to create VkDevice */
@@ -332,12 +480,13 @@ i32 vulkanCreateContext(const VulkanInfo* info, VulkanContext* context) {
             .queueCreateInfoCount = queue_info_count,
             .pNext = &dynamic_rendering_feature
         };
-        /* get physical device params and create device */
+        /* copy physical device params */
         context->physical_device = best_device_info->device;
         context->device_type = best_device_info->type;
-        //context->device_type = DEVICE_TYPE_INTEGRATED;
+        vkGetPhysicalDeviceMemoryProperties(context->physical_device, &context->memory_properties);
+        /* create device */
         if(vkCreateDevice(context->physical_device, &device_info, NULL, &context->device) != VK_SUCCESS) {
-            MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_CREATE_DEVICE, "failed to create vulkan device");
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_CREATE_DEVICE, "failed to create vulkan device");
         }
 
         /* get queues if they exists, render queue always exist or something is horribly bad */
@@ -349,22 +498,43 @@ i32 vulkanCreateContext(const VulkanInfo* info, VulkanContext* context) {
         if((context->transfer_family_id = best_device_info->transfer_family) != U32_MAX) {
             vkGetDeviceQueue(context->device, best_device_info->transfer_family, 0, &context->transfer_queue);
         }
+
     }
 
     /* LOAD EXTENSIONS */ {
         if(!(context->cmd_begin_rendering_khr = (void*)vkGetDeviceProcAddr(context->device, "vkCmdBeginRenderingKHR"))) {
-            MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_LOAD_PROC, "failed to load vkCmdBeginRenderingKHR procedure");
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_LOAD_PROC, "failed to load vkCmdBeginRenderingKHR procedure");
         }
         if(!(context->cmd_end_rendering_khr = (void*)vkGetDeviceProcAddr(context->device, "vkCmdEndRenderingKHR"))) {
-            MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_LOAD_PROC, "failed to load vkCmdEndRenderingKHR procedure");
+            MSG_CALLBACK(msg_callback, MSG_CODE_ERROR_VK_LOAD_PROC, "failed to load vkCmdEndRenderingKHR procedure");
         }
     }
 
     free(context_create_buffer); /* end of ContextCreateBuffer lifetime, its not needed anymore */
+    *vulkan_context = context;
+
+    MSG_CALLBACK_NO_TRACE(msg_callback, MSG_CODE_SUCCESS, "created vulkan context");
     return MSG_CODE_SUCCESS;
 }
 
-void vulkanDeleteContext(VulkanContext* context) {
+i32 destroyVulkanContext(MsgCallback_pfn msg_callback, VulkanContext* context) {
+    char msg_log[256] = {0};
+
+    u64 vram_arena_size = 0;
+    const u32 vram_allocation_count = context->vram_allocation_count;
+    for(u32 i = 0; i < MAX_VRAM_ALLOCATIONS && vram_allocation_count != 0; i++) {
+        if(context->vram_allocations[i].size != 0) {
+            vram_arena_size += context->vram_allocations[i].size;
+            vkFreeMemory(context->device, context->vram_allocations[i].memory, NULL);
+        }
+    }
+
+    /* LOG */ {
+        strcpy(msg_log, "free vram arena of size: ");
+        strcat_u64(msg_log, vram_arena_size);
+        MSG_CALLBACK_NO_TRACE(msg_callback, MSG_CODE_SUCCESS, msg_log);
+    }
+
     vkDestroyDevice(context->device, NULL);
     vkDestroySurfaceKHR(context->instance, context->surface, NULL);
     if(context->debug_messenger) {
@@ -374,41 +544,8 @@ void vulkanDeleteContext(VulkanContext* context) {
     glfwDestroyWindow(context->window);
     glfwTerminate();
 
-    /* invalidate context */
-    *context = (VulkanContext){0};
-}
+    free(context);
+    MSG_CALLBACK_NO_TRACE(msg_callback, MSG_CODE_SUCCESS, "destroyed vulkan context");
 
-i32 vulkanRun(const VulkanInfo* info) {
-    /* first we need to make sure that you filled this VulkanInfo correctly */
-    /* INFO VALIDATION */ {
-        if(!info) return MSG_CODE_ERROR_VK_INFO_INVALID;
-        if(!info->msg_callback) return MSG_CODE_ERROR_VK_INFO_INVALID;
-        if(!info->name) {
-            MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_INFO_INVALID, "vulkan info name pointer invalid");
-        }
-        if(info->x == 0 || info->y == 0) {
-            MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_INFO_INVALID, "vulkan info x or y size invalid");
-        }
-    }
-
-    VulkanContext vulkan_context = (VulkanContext){0};
-
-    /* create context that consists of essential objects like VkDevice, VkSurface etc, necessary for interacting with vk api */
-    if(MSG_IS_ERROR(vulkanCreateContext(info, &vulkan_context))) {
-        MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_CREATE_CONTEXT, "failed to init vulkan");
-    }
-    /* init vram arena */
-    if(MSG_IS_ERROR(vramArenaInit(&vulkan_context))) {
-        MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_INIT_VRAM_ARENA, "failed to init vulkan");
-    }
-    
-    if(MSG_IS_ERROR(renderRun(&vulkan_context, info->render_settings, info->msg_callback))) {
-        MSG_CALLBACK(info->msg_callback, MSG_CODE_ERROR_VK_RENDER_RUN, "failed to run render");
-    }
-
-    vramArenaTemrinate();
-
-    /* dont forget to destroy vulkan objects */
-    vulkanDeleteContext(&vulkan_context);
     return MSG_CODE_SUCCESS;
 }

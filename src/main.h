@@ -1,6 +1,8 @@
 #ifndef _MAIN_INCLUDED
 #define _MAIN_INCLUDED
 
+#define _CRT_SECURE_NO_DEPRECATE 
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -32,6 +34,7 @@ typedef unsigned b32;
 #define CLAMP(a, b, t) ((t < a) ? a : (t > b) ? b : t)
 
 #define ALIGN(ptr, alig) ((ptr + (alig - 1)) & ~(alig - 1))
+#define ARRAY_COUNT(array) (sizeof(array) / sizeof(array[0]))
 
 typedef struct {
     u8* buffer;
@@ -61,6 +64,7 @@ typedef b32 (*MsgCallback_pfn) (i32 msg_code, const char* msg);
 #define LOCATION_TRACE " *** " __FILE__ ":" TOSTRING(__LINE__)
 
 #define MSG_CALLBACK(callback, code, message) if(callback(code, message LOCATION_TRACE)) return code
+#define MSG_CALLBACK_NO_TRACE(callback, code, message) if(callback(code, message)) return code
 
 /*======================================================================
     VK INTERFACE
@@ -91,7 +95,7 @@ typedef enum {
     MSG_CODE_ERROR_VK_IMAGE_BIND_MEMORY = -2147483626,
     MSG_CODE_ERROR_VK_DESCRIPTOR_POOL_CREATE = -2147483625,
     MSG_CODE_ERROR_VK_CREATE_DESCRIPTOR_SET_LAYOUT = -2147483622,
-    MSG_CODE_ERROR_VK_CREATE_DESCRIPTOR_SET = -2147483621,
+    MSG_CODE_ERROR_VK_ALLOCATE_DESCRIPTOR_SETS = -2147483621,
     MSG_CODE_ERROR_VK_ALLOCATE_VRAM = -2147483621,
     MSG_CODE_ERROR_VK_PIPELINE_LAYOUT_CREATE = -2147483620,
     MSG_CODE_ERROR_VK_SEMAPHORE_CREATE = -2147483619,
@@ -110,76 +114,16 @@ typedef enum {
     MSG_CODE_ERROR_VK_BIND_RESOURCE_MEMORY = -2147483602,
     MSG_CODE_ERROR_VK_INIT_VRAM_ARENA = -2147483601,
     MSG_CODE_ERROR_VK_MAP_MEMORY = -2147483600,
-    MSG_CODE_ERROR_VK_CREATE_PIPELINE_NODES = -2147483599,
-    MSG_CODE_ERROR_VK_RENDER_BINDING_INVALID = -2147483598,
-    MSG_CODE_ERROR_VK_BAD_BINDING_LAYOUT = -2147483597,
-    MSG_CODE_ERROR_VK_RENDER_BINDING_CONTEXT_CREATE = -2147483596,
-    MSG_CODE_ERROR_VK_RENDER_NODE_INVALID = -2147483595,
-    MSG_CODE_ERROR_VK_RENDER_EXECUTE_CONTEXT_CREATE = -2147483594
+    MSG_CODE_ERROR_VK_NO_SURFACE_FORMATS_AVAILABLE = -2147483599,
+    MSG_CODE_ERROR_VK_NO_PRESENT_MODES_AVAILABLE = -2147483598,
+    MSG_CODE_ERROR_VK_NO_DEPTH_MODES_AVAILABLE = -2147483597,
+    MSG_CODE_ERROR_VK_RESOURCE_INFO_INVALID = -2147483596,
+    MSG_CODE_ERROR_VK_RENDER_PIPELINE_INVALID = -2147483595
 } MSG_CODES_VK;
 
 
-/* indentifies type of binding in shader */
-typedef enum {
-    RENDER_BINDING_TYPE_NONE = 0,
-    RENDER_BINDING_TYPE_UNIFORM_BUFFER = 1,
-    RENDER_BINDING_TYPE_STORAGE_BUFFER = 2
-} RenderBindingType;
-
-typedef void (*RenderMemoryWrite_pfn)(void* ptr);
-
-typedef struct {
-    u32 binding;
-    u32 set;
-    RenderBindingType type;
-    u64 size;
-    RenderMemoryWrite_pfn initial_batch;
-    RenderMemoryWrite_pfn frame_batch;
-} RenderBinding;
-
-
-/* types of render nodes affects which shaders will be used */
-typedef enum {
-    RENDER_NODE_TYPE_NONE = 0,
-    RENDER_NODE_TYPE_GRAPHICS = 1,
-    RENDER_NODE_TYPE_COMPUTE = 2
-} RenderNodeType;
-
-typedef struct {
-    u32 instance_count;
-    u32 vertex_count;
-} RenderDrawInfo;
-
-typedef void (*RenderDraw_pfn)(RenderDrawInfo** infos, u32* count);
-
-/* describes render node, in other words render pipeline */
-typedef struct {
-    RenderNodeType type;
-    u32 layout_set_id;
-    const char* vertex_shader;
-    const char* fragment_shader;
-    const char* compute_shader;
-    RenderDraw_pfn draw_callback;
-} RenderNode;
-
-typedef struct {
-    u32 screen_x;
-    u32 screen_y;
-} RenderUpdateContext;
-
-typedef void (*RenderUpdate_pfn)(const RenderUpdateContext* render_context);
-typedef void (*RenderStart_pfn)(const RenderUpdateContext* render_context);
-
-/* settings of render in vulkan */
-typedef struct {
-    const RenderBinding* bindings;
-    const RenderNode* nodes;
-    u32 binding_count;
-    u32 node_count;
-    RenderStart_pfn start_callback;
-    RenderUpdate_pfn update_callback;
-} RenderSettings;
-
+typedef struct VulkanContext VulkanContext;
+typedef struct RenderContext RenderContext;
 
 /* Used by vulkan info struct, affects vulkan instance and glfw creation.
 If you want to use render doc, make sure DEBUG flag is not set!  */
@@ -191,19 +135,121 @@ typedef enum {
 /* Used by vulkanRun function, provides necessary information for initialization
 and runtime of this function.   */
 typedef struct {
-    MsgCallback_pfn msg_callback; /* error and warning handling function */
     const char* name;
     u32 x; /* width of window in pixels, not used if fullscreen*/
     u32 y; /* heigh of window in pixels, not used if fullscreen*/
     VulkanFlags flags; /* VulkanFlags value, determines intialization flags */
     u32 version; /* informs vulkan about your app version */
-    /* settings */
-    const RenderSettings* render_settings; /* leave as null if not used */
-} VulkanInfo;
+} VulkanContextInfo;
 
 /* Runs vulkan function, initalizes glfw, vulkan and all rendering involved,
 then executes render code.  */
-i32 vulkanRun(const VulkanInfo* info);
+i32 createVulkanContext(const VulkanContextInfo* info, MsgCallback_pfn msg_callback, VulkanContext** vulkan_context);
+i32 destroyVulkanContext(MsgCallback_pfn msg_callback, VulkanContext* context);
+
+typedef enum {
+    RENDER_RESOURCE_TYPE_NONE = 0,
+    RENDER_RESOURCE_TYPE_UNIFORM_BUFFER = 1,
+    RENDER_RESOURCE_TYPE_STORAGE_BUFFER = 2
+} RenderResourceType;
+
+typedef enum {
+    RENDER_RESOURCE_HOST_IMMUTABLE = 0,
+    RENDER_RESOURCE_HOST_MUTABLE = 1
+} RenderResourceHostMutability;
+
+typedef struct {
+    u32 binding;
+    u32 set;
+} RenderBinding;
+
+/* resources are all accessed via binding and set */
+typedef struct {
+    RenderResourceType type;
+    RenderResourceHostMutability mutability;
+    u32 binding; 
+    u32 set;
+    u64 size;
+} RenderResourceInfo;
+
+typedef enum {
+    RENDER_PIPELINE_TYPE_NONE = 0,
+    RENDER_PIPELINE_TYPE_GRAPHICS = 1,
+    RENDER_PIPELINE_TYPE_COMPUTE = 2
+} RenderPipelineType;
+
+typedef struct {
+    RenderPipelineType type;
+    const char* name; /* used for debug */
+    const char* vertex_shader;
+    const char* fragment_shader;
+    const char* compute_shader;
+} RenderPipelineInfo;
+
+typedef struct {
+    u32 screen_x;
+    u32 screen_y;
+} UpdateContext;
+
+typedef void (*UpdateCallback_pfn)(UpdateContext* update_context);
+
+typedef struct {
+    const RenderResourceInfo* resource_infos;
+    const RenderPipelineInfo* pipeline_infos; /* indices of programms are preserved, so you can always access it via index you chouse */
+    u32 resource_count;
+    u32 pipeline_count;
+    UpdateCallback_pfn update_callback;
+} RenderContextInfo;
+
+typedef struct RenderContext RenderContext;
+
+/* vulkan context is not constant because memmory data will change during vram allocations */
+i32 createRenderContext(VulkanContext* vulkan_context, const RenderContextInfo* render_info, MsgCallback_pfn msg_callback, RenderContext** render_context);
+i32 destroyRenderContext(VulkanContext* vulkan_context, MsgCallback_pfn msg_callback, RenderContext* render_context);
+
+/*======================================================================
+    STD
+  ======================================================================*/
+
+static inline void strcat_u32(char* dst, u32 src) {
+    for(;*dst;dst++);
+    if(!src) {
+        *dst++ = '0';
+    } else {
+        u32 reverse = 0;
+        u32 digits = 0;
+        while(src){
+            reverse = reverse * 10 + src % 10;
+            src = src / 10;
+            digits++;
+        }
+        for(;digits; digits--) {
+            *dst++ = reverse % 10 + 48;
+            reverse /= 10;
+        }
+    }
+    *dst = '\0';
+}
+
+static inline void strcat_u64(char* dst, u64 src) {
+    for(;*dst;dst++);
+    if(!src) {
+        *dst++ = '0';
+    } else {
+        u64 reverse = 0;
+        u32 digits = 0;
+        while(src){
+            reverse = reverse * 10 + src % 10;
+            src = src / 10;
+            digits++;
+        }
+        for(;digits; digits--) {
+            *dst++ = reverse % 10 + 48;
+            reverse /= 10;
+        }
+    }
+    *dst = '\0';
+}
 
 /*======================================================================
     ENGINE INFO
