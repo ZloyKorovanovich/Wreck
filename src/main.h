@@ -118,11 +118,13 @@ typedef enum {
     MSG_CODE_ERROR_VK_NO_PRESENT_MODES_AVAILABLE = -2147483598,
     MSG_CODE_ERROR_VK_NO_DEPTH_MODES_AVAILABLE = -2147483597,
     MSG_CODE_ERROR_VK_RESOURCE_INFO_INVALID = -2147483596,
-    MSG_CODE_ERROR_VK_RENDER_PIPELINE_INVALID = -2147483595
+    MSG_CODE_ERROR_VK_RENDER_PIPELINE_INVALID = -2147483595,
+    MSG_CODE_ERROR_VK_OPEN_FILE = -2147483594
 } MSG_CODES_VK;
 
 
 typedef struct VulkanContext VulkanContext;
+typedef struct VulkanCmdContext VulkanCmdContext;
 typedef struct RenderContext RenderContext;
 
 /* Used by vulkan info struct, affects vulkan instance and glfw creation.
@@ -187,11 +189,12 @@ typedef struct {
 } RenderPipelineInfo;
 
 typedef struct {
-    u32 screen_x;
-    u32 screen_y;
-} UpdateContext;
+    u32 x;
+    u32 y;
+} RenderUpdateContext;
 
-typedef void (*UpdateCallback_pfn)(UpdateContext* update_context);
+typedef void (*UpdateCallback_pfn)(RenderUpdateContext* context);
+typedef void (*RenderCallback_pfn)(VulkanCmdContext* cmd);
 
 typedef struct {
     const RenderResourceInfo* resource_infos;
@@ -199,13 +202,15 @@ typedef struct {
     u32 resource_count;
     u32 pipeline_count;
     UpdateCallback_pfn update_callback;
+    RenderCallback_pfn render_callback;
 } RenderContextInfo;
-
-typedef struct RenderContext RenderContext;
 
 /* vulkan context is not constant because memmory data will change during vram allocations */
 i32 createRenderContext(VulkanContext* vulkan_context, const RenderContextInfo* render_info, MsgCallback_pfn msg_callback, RenderContext** render_context);
 i32 destroyRenderContext(VulkanContext* vulkan_context, MsgCallback_pfn msg_callback, RenderContext* render_context);
+i32 renderLoop(const VulkanContext* vulkan_context, MsgCallback_pfn msg_callback, RenderContext* render_context);
+
+void cmdDraw(VulkanCmdContext* cmd, u32 pipeline_id, u32 vertex_count, u32 instance_count);
 
 /*======================================================================
     STD

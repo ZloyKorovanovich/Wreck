@@ -69,6 +69,10 @@ void freeVram(VulkanContext* vulkan_context, VramAllocation* allocation);
 #define SHADER_GRAPHICS_FRAGMENT_ID 1
 #define SHADER_COMPUTE_ID 0
 
+#define SHADER_ENTRY_VERTEX "vertexMain"
+#define SHADER_ENTRY_FRAGMENT "fragmentMain"
+#define SHADER_ENTRY_COMPUTE "computeMain"
+
 #define MAX_DESCRIPTOR_SETS 16
 #define MAX_BINDINGS_PER_SET 16
 
@@ -102,7 +106,7 @@ typedef struct {
 typedef struct {
     RenderPipelineType type;
     VkShaderModule shaders[MAX_SHADER_MODULE_COUNT];
-    VkPipeline* pipeline;
+    VkPipeline pipeline;
 } RenderPipeline;
 
 typedef struct {
@@ -114,10 +118,22 @@ typedef struct {
     u64 size;
 } RenderResource;
 
+
+struct VulkanCmdContext {
+    const VulkanContext* vulkan_context;
+    const RenderContext* render_context;
+    VkCommandBuffer command_buffer;
+    RenderPipelineType last_type;
+    u32 render_image_id;
+    u32 bound_pipeline_id;
+};
+
 struct RenderContext{
+    UpdateCallback_pfn update_callback;
+    RenderCallback_pfn render_callback;
+    /* SCREEN */
     Screen screen;
     SurfaceData surface_data;
-    RenderPipeline* pipelines;
 
     /* RESOURCES */
     VkDescriptorPool descriptor_pool;
@@ -135,6 +151,11 @@ struct RenderContext{
     VkPipelineLayout empty_pipeline_layout;
     VkDescriptorSetLayout empty_set_layout;
 
+    /* PIPELINES */
+    RenderPipeline* render_pipelines;
+    u32 render_pipeline_count;
+
     /* EXECUTION */
     VkCommandPool command_pool;
+    
 };
