@@ -416,7 +416,7 @@ i32 createVulkanContext(const VulkanContextInfo* info, MsgCallback_pfn msg_callb
             strcat(log_message, " device type: ");
             strcat_u32(log_message, best_device_info->type);
             strcat(log_message, " queues {");
-            strcat(log_message, " render: ");
+            strcat(log_message, "render: ");
             strcat_u32(log_message, best_device_info->render_family);
             strcat(log_message, " compute: ");
             if(best_device_info->compute_family != U32_MAX) {

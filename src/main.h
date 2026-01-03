@@ -180,9 +180,25 @@ typedef enum {
     RENDER_PIPELINE_TYPE_COMPUTE = 2
 } RenderPipelineType;
 
+typedef enum {
+    RENDER_RESOURCE_ACCESS_TYPE_READ = 0,
+    RENDER_RESOURCE_ACCESS_TYPE_WRITE = 1,
+    RENDER_RESOURCE_ACCESS_TYPE_READ_WRITE = 2
+} RenderResourceAccessType;
+
+typedef struct {
+    u32 binding;
+    u32 set;
+    RenderResourceAccessType type;
+} RenderResourceAccess;
+
 typedef struct {
     RenderPipelineType type;
-    const char* name; /* used for debug */
+
+    u32 resource_access_count;
+    const RenderResourceAccess* resources_access;
+
+    const char* name; /* used for debug only */
     const char* vertex_shader;
     const char* fragment_shader;
     const char* compute_shader;
@@ -191,18 +207,19 @@ typedef struct {
 typedef struct {
     u32 x;
     u32 y;
-} RenderUpdateContext;
+} RenderWindowContext;
 
-typedef void (*UpdateCallback_pfn)(RenderUpdateContext* context);
-typedef void (*RenderCallback_pfn)(VulkanCmdContext* cmd);
+
+typedef void (*RenderStart_pfn)(VulkanCmdContext* cmd);
+typedef void (*RenderUpdate_pfn)(const RenderWindowContext* window_context, VulkanCmdContext* cmd);
 
 typedef struct {
+    RenderStart_pfn start_callback;
+    RenderUpdate_pfn update_callback;
     const RenderResourceInfo* resource_infos;
     const RenderPipelineInfo* pipeline_infos; /* indices of programms are preserved, so you can always access it via index you chouse */
     u32 resource_count;
     u32 pipeline_count;
-    UpdateCallback_pfn update_callback;
-    RenderCallback_pfn render_callback;
 } RenderContextInfo;
 
 /* vulkan context is not constant because memmory data will change during vram allocations */
@@ -210,7 +227,10 @@ i32 createRenderContext(VulkanContext* vulkan_context, const RenderContextInfo* 
 i32 destroyRenderContext(VulkanContext* vulkan_context, MsgCallback_pfn msg_callback, RenderContext* render_context);
 i32 renderLoop(const VulkanContext* vulkan_context, MsgCallback_pfn msg_callback, RenderContext* render_context);
 
+void cmdCompute(VulkanCmdContext* cmd, u32 pipeline_id, u32 groups_x, u32 groups_y, u32 groups_z);
 void cmdDraw(VulkanCmdContext* cmd, u32 pipeline_id, u32 vertex_count, u32 instance_count);
+void* cmdBeginWriteResource(VulkanCmdContext* cmd, const RenderBinding* binding);
+void cmdEndWriteResource(VulkanCmdContext* cmd);
 
 /*======================================================================
     STD

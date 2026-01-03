@@ -107,6 +107,9 @@ typedef struct {
     RenderPipelineType type;
     VkShaderModule shaders[MAX_SHADER_MODULE_COUNT];
     VkPipeline pipeline;
+    /* data dependency */
+    RenderResourceAccess* resources_access;
+    u32 resource_access_count;
 } RenderPipeline;
 
 typedef struct {
@@ -119,18 +122,29 @@ typedef struct {
 } RenderResource;
 
 
+typedef struct {
+    u32 src_stage;
+    u32 src_access;
+} RenderResourceState;
+
+/* @(FIX): add differnet states like transfer general etc */
 struct VulkanCmdContext {
     const VulkanContext* vulkan_context;
     const RenderContext* render_context;
+    void* mapped_memory;
+    RenderBinding write_binding;
+
     VkCommandBuffer command_buffer;
     RenderPipelineType last_type;
     u32 render_image_id;
     u32 bound_pipeline_id;
+    /* resource states */
+    RenderResourceState resource_states[MAX_DESCRIPTOR_SETS][MAX_BINDINGS_PER_SET];
 };
 
-struct RenderContext{
-    UpdateCallback_pfn update_callback;
-    RenderCallback_pfn render_callback;
+struct RenderContext {
+    RenderStart_pfn start_callback;
+    RenderUpdate_pfn update_callback;
     /* SCREEN */
     Screen screen;
     SurfaceData surface_data;
@@ -152,8 +166,11 @@ struct RenderContext{
     VkDescriptorSetLayout empty_set_layout;
 
     /* PIPELINES */
-    RenderPipeline* render_pipelines;
+    void* render_pipeline_buffer; /* malloced address */
+    RenderPipeline* render_pipelines; /* = render_pipeline_buffer */
+    RenderResourceAccess* render_resources_access; /* = (u8*)render_pipeline_buffer + sizeof(RenderPipeline) * render_pipeline_count */
     u32 render_pipeline_count;
+    u32 render_resource_access_count;
 
     /* EXECUTION */
     VkCommandPool command_pool;
