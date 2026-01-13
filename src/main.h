@@ -156,42 +156,32 @@ i32 createVulkanContext(const VulkanContextInfo* info, MsgCallback_pfn msg_callb
 /* destroys vulkan context frees memory */
 i32 destroyVulkanContext(MsgCallback_pfn msg_callback, VulkanContext* context);
 
-/* type of render resource */
-typedef enum {
-    RENDER_RESOURCE_TYPE_NONE = 0,
-    RENDER_RESOURCE_TYPE_UNIFORM_BUFFER = 1,
-    RENDER_RESOURCE_TYPE_STORAGE_BUFFER = 2
-} RenderResourceType;
 
-/* marks if resource can be modiffied by cpu or not, */
 typedef enum {
-    RENDER_RESOURCE_HOST_IMMUTABLE = 0,
-    RENDER_RESOURCE_HOST_MUTABLE_ALWAYS = 1,
-    RENDER_RESOURCE_HOST_MUTABLE_START = 2
-} RenderResourceHostMutability;
+    RENDER_RESOURCE_MUTABILITY_IMMUTABLE = 0x0,
+    RENDER_RESOURCE_HOST_MUTABLE_ALWAYS = 0x1,
+    RENDER_RESOURCE_HOST_MUTABLE_ONE_TIME = 0x2,
+    RENDER_RESOURCE_DEVICE_MUTABLE_FLAG = 0x80000000,
+} RenderResourceMutabilityFlags;
 
-/* thats user way to point at bindings and resources, they are exactly the same that you use in shader */
+typedef struct {
+    RenderResourceMutabilityFlags mutability_flags;
+    void* data;
+    u64 buffer_size;
+} RenderBufferInfo;
+
 typedef struct {
     u32 binding;
     u32 set;
 } RenderBinding;
 
-/* resources are all accessed via binding and set */
 typedef struct {
-    RenderResourceType type; /* type of resource */
-    u32 binding; /* binding identifier you will use to point at resource (same as in shader) */
-    u32 set; /* set identifier you will use to point at resource (same as in shader) */
-
-    /* marks if buffer can be cahnged from host side 
-    (on descrete gpus mutable requires host buffer duplicate, 
-    which might cause memory decrease if not used) */
-    RenderResourceHostMutability mutability;
-
-    /* size of resource, information size of buffer/image, 
-    might be not actual size that will be allocated (aligment issues), 
-    but definitely size of used part of resource */
-    u64 size; 
-} RenderResourceInfo;
+    const RenderBufferInfo* uniform_buffer; /* single buffer */
+    const RenderBufferInfo* vertex_buffers; /* buffer array */
+    const RenderBufferInfo* storage_buffers; /* buffer array */
+    u32 vertex_buffer_count;
+    u32 storage_buffer_count;
+} RenderBuffersInfo;
 
 /* types of pipelines */
 typedef enum {
@@ -241,7 +231,6 @@ typedef void (*RenderUpdate_pfn)(const RenderWindowContext* window_context, Vulk
 typedef struct {
     RenderStart_pfn start_callback; /* executed before entering render loop, do initial transfers here */
     RenderUpdate_pfn update_callback; /* executed inside of render loop every frame, all rendering is done here */
-    const RenderResourceInfo* resource_infos; /* resources are accessed via binding and set */
     const RenderPipelineInfo* pipeline_infos; /* indices of programms are preserved, so you can always access it via index you chouse */
     u32 resource_count;
     u32 pipeline_count;

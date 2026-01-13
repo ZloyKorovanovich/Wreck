@@ -122,17 +122,6 @@ typedef struct {
 } RenderPipeline;
 
 typedef struct {
-    RenderResourceType type;
-    RenderResourceHostMutability mutability;
-    void* device_resource;
-    void* host_resource; /* optionaly used for stransfer in descrete devices */
-    u64 device_offset;
-    u64 host_offset;
-    u64 size;
-} RenderResource;
-
-
-typedef struct {
     u32 src_stage;
     u32 src_access;
 } RenderResourceState;
@@ -164,8 +153,6 @@ struct RenderContext {
     VkDescriptorPool descriptor_pool;
     VkDescriptorSetLayout descriptor_set_layouts[MAX_DESCRIPTOR_SETS];
     VkDescriptorSet descriptor_sets[MAX_DESCRIPTOR_SETS];
-    RenderResource resources[MAX_DESCRIPTOR_SETS][MAX_BINDINGS_PER_SET]; /* descriptors * bindings not the oposite */
-    RenderResource* resources_plain[MAX_DESCRIPTOR_SETS * MAX_BINDINGS_PER_SET];
     u32 resource_count;
     u32 descriptor_set_count;
     /* resource storage */

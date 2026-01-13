@@ -7,7 +7,7 @@ i32 getSurfaceData(const VulkanContext* vulkan_context, MsgCallback_pfn msg_call
 
     *surface_data = (SurfaceData){0};
 
-    /* FORMAT */{
+    /* FORMAT */ {
         VkSurfaceFormatKHR surface_formats[MAX_SURFACE_FORMATS_COUNT] = {0};
         u32 format_count = 0;
         vkGetPhysicalDeviceSurfaceFormatsKHR(vulkan_context->physical_device, vulkan_context->surface, &format_count, NULL);
