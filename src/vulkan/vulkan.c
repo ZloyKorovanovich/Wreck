@@ -12,7 +12,7 @@ const VkDebugUtilsMessageTypeFlagBitsEXT c_debug_message_type = (
     VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT
 );
 
-const char* c_required_device_extension_names[] = {
+const char *c_required_device_extension_names[] = {
     VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME,
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,
     VK_KHR_SPIRV_1_4_EXTENSION_NAME
@@ -40,7 +40,7 @@ typedef struct {
 } DeviceInfo;
 
 
-b32 checkPhysicalDevice(VkPhysicalDevice device, MsgCallback_pfn msg_callback, DeviceInfo* info, Stack* stack) {
+b32 checkPhysicalDevice(VkPhysicalDevice device, MsgCallback_pfn msg_callback, DeviceInfo *info, Stack *stack) {
     /* be careful inside this function, it might return false because of failed allocation 
         also dont forget to pop stack before return, better use goto _success; goto _fail;*/
     pushStack(stack);
@@ -56,7 +56,7 @@ b32 checkPhysicalDevice(VkPhysicalDevice device, MsgCallback_pfn msg_callback, D
         u32 available_extension_count = 0;
         vkEnumerateDeviceExtensionProperties(device, NULL, &available_extension_count, NULL);
         /* allocate available_extensions array */
-        VkExtensionProperties* available_extensions = allocateStack(stack, available_extension_count * sizeof(VkExtensionProperties), 16);
+        VkExtensionProperties *available_extensions = allocateStack(stack, available_extension_count * sizeof(VkExtensionProperties), 16);
         if(!available_extensions) {
             MSG_ERROR(msg_callback, &CONST_STRING("failed to allocate available_extensions array"));
             goto _fail;
@@ -78,7 +78,7 @@ b32 checkPhysicalDevice(VkPhysicalDevice device, MsgCallback_pfn msg_callback, D
         u32 queue_family_count = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, NULL);
         /* allocate queue_families array */
-        VkQueueFamilyProperties* queue_families = allocateStack(stack, queue_family_count * sizeof(VkQueueFamilyProperties), 16);
+        VkQueueFamilyProperties *queue_families = allocateStack(stack, queue_family_count * sizeof(VkQueueFamilyProperties), 16);
         if(!queue_families) {
             MSG_ERROR(msg_callback, &CONST_STRING("failed to allocate queue_families array"));
             goto _fail;
@@ -107,7 +107,7 @@ b32 checkPhysicalDevice(VkPhysicalDevice device, MsgCallback_pfn msg_callback, D
     }
 
     /* DEVICE PROPERTIES */ {
-        VkPhysicalDeviceProperties* device_properties = allocateStack(stack, sizeof(VkPhysicalDeviceProperties), 16);
+        VkPhysicalDeviceProperties *device_properties = allocateStack(stack, sizeof(VkPhysicalDeviceProperties), 16);
         if(!device_properties) {
             MSG_ERROR(msg_callback, &CONST_STRING("failed to allocate device_properties"));
             goto _fail;
@@ -126,7 +126,7 @@ b32 checkPhysicalDevice(VkPhysicalDevice device, MsgCallback_pfn msg_callback, D
     }
 
     /* DEVICE MEMORY */ {
-        VkPhysicalDeviceMemoryProperties* memory_properties = allocateStack(stack, sizeof(VkPhysicalDeviceMemoryProperties), 16);
+        VkPhysicalDeviceMemoryProperties *memory_properties = allocateStack(stack, sizeof(VkPhysicalDeviceMemoryProperties), 16);
         if(!memory_properties) {
             MSG_ERROR(msg_callback, &CONST_STRING("failed to allocate memory_properties"));
             goto _fail;
@@ -134,7 +134,7 @@ b32 checkPhysicalDevice(VkPhysicalDevice device, MsgCallback_pfn msg_callback, D
         vkGetPhysicalDeviceMemoryProperties(device, memory_properties);
 
         /* get device heap info */
-        const VkMemoryHeap* memory_heaps = memory_properties->memoryHeaps;
+        const VkMemoryHeap *memory_heaps = memory_properties->memoryHeaps;
         for(u32 i = 0; i < memory_properties->memoryHeapCount; i++) {
             if(memory_heaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
                 info->device_heap = MAX(info->device_heap, memory_heaps[i].size); 
@@ -155,7 +155,7 @@ b32 checkPhysicalDevice(VkPhysicalDevice device, MsgCallback_pfn msg_callback, D
 }
 
 /* return pointer to best of 2 */
-const DeviceInfo* compareDevices(const DeviceInfo* a, const DeviceInfo* b) {
+const DeviceInfo *compareDevices(const DeviceInfo *a, const DeviceInfo *b) {
     if(b->device_model == DEVICE_MODEL_DESCRETE && a->device_model != DEVICE_MODEL_DESCRETE) return b;
     /* check queues */
     if(b->compute_queue_id != U32_MAX && a->compute_queue_id == U32_MAX) return b;
@@ -170,19 +170,19 @@ const DeviceInfo* compareDevices(const DeviceInfo* a, const DeviceInfo* b) {
 
 /* debug utils messenger callback */
 VKAPI_ATTR VkBool32 VKAPI_CALL validationDebugCallback(
-    VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT* callback_data, void* user_data
+    VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT *callback_data, void *user_data
 ) {
     String string = (String) {
         .string = (char[512]){0},
         .capacity = 512
     };
 
-    stringPattern(&CONST_STRING("vk message :: %c\n"), (const void*[]){callback_data->pMessage}, &string);
+    stringPattern(&CONST_STRING("vk message :: %c\n"), (const void *[]){callback_data->pMessage}, &string);
     printConsole(&string);
     return !(severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT);
 }
 
-VulkanContext* createVulkanContext(Allocate_pfn context_allocate, const VulkanContextInfo* info) {
+VulkanContext *createVulkanContext(Allocate_pfn context_allocate, const VulkanContextInfo *info) {
     String msg_string = (String) {
         .string = (char[256]){0},
         .capacity = 256
@@ -206,7 +206,7 @@ VulkanContext* createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
             /* combine data into string */
             stringPattern(
                 &TRACED_STR("VulkanContextInfo param resolution invalid x: %u y: %u "), 
-                (const void*[]){&res_x, &res_y}, &msg_string
+                (const void *[]){&res_x, &res_y}, &msg_string
             );
             /* call error message */
             MSG_ERROR(info->msg_callback, &msg_string);
@@ -220,7 +220,7 @@ VulkanContext* createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
     }
 
     /* allocate context with allocator function */
-    VulkanContext* context = context_allocate(sizeof(VulkanContext), 8);
+    VulkanContext *context = context_allocate(sizeof(VulkanContext), 8);
     if(!context) {
         MSG_ERROR(info->msg_callback, &TRACED_STR("failed to allocate context"));
         return NULL;
@@ -251,7 +251,7 @@ VulkanContext* createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
         /* LOG */ {
             const u64 res_x = info->resolution_x;
             const u64 res_y = info->resolution_y;
-            stringPattern(&CONST_STRING("created glfw window { name: \"%s\" x: %u y: %u }"), (const void*[]){&info->name, &res_x, &res_y}, &msg_string);
+            stringPattern(&CONST_STRING("created glfw window { name: \"%s\" x: %u y: %u }"), (const void *[]){&info->name, &res_x, &res_y}, &msg_string);
             MSG_LOG(context->msg_callback, &msg_string);
         }
     }
@@ -260,12 +260,12 @@ VulkanContext* createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
     pushStack(&init_stack);
     /* global instance info */
     u32 required_extension_count = 0;
-    const char** required_extensions = NULL;
+    const char **required_extensions = NULL;
 
     /* EXTENSIONS & LAYERS MATCHING */ {
         /* get glfw extensions */
         u32 glfw_extension_count = 0;
-        const char** glfw_extension_names = glfwGetRequiredInstanceExtensions(&glfw_extension_count);
+        const char **glfw_extension_names = glfwGetRequiredInstanceExtensions(&glfw_extension_count);
 
         /* calculate number of extensions */
         required_extension_count = (VULKAN_FLAG_DEBUG & info->flags) ? glfw_extension_count + 1 : glfw_extension_count;
@@ -294,7 +294,7 @@ VulkanContext* createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
         u32 available_extension_count = 0;
         vkEnumerateInstanceExtensionProperties(NULL, &available_extension_count, NULL);
         /* allocate available exetnsions array */
-        VkExtensionProperties* available_extensions = allocateStack(&init_stack, available_extension_count * sizeof(VkExtensionProperties), 16);
+        VkExtensionProperties *available_extensions = allocateStack(&init_stack, available_extension_count * sizeof(VkExtensionProperties), 16);
         if(!available_extensions) {
             MSG_ERROR(context->msg_callback, &TRACED_STR("failed to allocate available_extensions array"));
             return NULL;
@@ -311,7 +311,7 @@ VulkanContext* createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
                 }
             }
             /* if not in avaliable list */
-            stringPattern(&TRACED_STR("required instance extension unavailbale name: %c"), (const void*[]){&required_extensions[i]}, &msg_string);
+            stringPattern(&TRACED_STR("required instance extension unavailbale name: %c"), (const void *[]){&required_extensions[i]}, &msg_string);
             MSG_ERROR(context->msg_callback, &msg_string);
             return NULL;
             /* if avaliable continue to next extension */
@@ -331,7 +331,7 @@ VulkanContext* createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
             }
 
             /* allocate available layers array */
-            VkLayerProperties* avaliable_layers = allocateStack(&init_stack, vulkan_layer_count * sizeof(VkLayerProperties), 16);
+            VkLayerProperties *avaliable_layers = allocateStack(&init_stack, vulkan_layer_count * sizeof(VkLayerProperties), 16);
             if(!avaliable_layers) {
                 MSG_ERROR(context->msg_callback, &TRACED_STR("failed to allocate avaliable_layers array"));
                 return NULL;
@@ -345,7 +345,7 @@ VulkanContext* createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
                 }
             }
             /* if debug layer not found */
-            stringPattern(&TRACED_STR("debug layer unavaliable: %s"), (const void*[]){&c_debug_layer_name}, &msg_string);
+            stringPattern(&TRACED_STR("debug layer unavaliable: %s"), (const void *[]){&c_debug_layer_name}, &msg_string);
             MSG_ERROR(context->msg_callback, &msg_string);
             return NULL;
             /* if found debug layer all good */
@@ -417,11 +417,11 @@ VulkanContext* createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
         /* create debug messenger if debug flag is set */
         if(info->flags & VULKAN_FLAG_DEBUG) {
             /* load ext functions for debug utils messenger */
-            if(!(context->create_debug_messenger = (void*)vkGetInstanceProcAddr(context->instance, "vkCreateDebugUtilsMessengerEXT"))) {
+            if(!(context->create_debug_messenger = (void *)vkGetInstanceProcAddr(context->instance, "vkCreateDebugUtilsMessengerEXT"))) {
                 MSG_ERROR(context->msg_callback, &TRACED_STR("failed to load vkCreateDebugUtilsMessengerEXT"));
                 return NULL;
             }
-            if(!(context->destroy_debug_messenger = (void*)vkGetInstanceProcAddr(context->instance, "vkDestroyDebugUtilsMessengerEXT"))) {
+            if(!(context->destroy_debug_messenger = (void *)vkGetInstanceProcAddr(context->instance, "vkDestroyDebugUtilsMessengerEXT"))) {
                 MSG_ERROR(context->msg_callback, &TRACED_STR("failed to load vkDestroyDebugUtilsMessengerEXT"));
                 return NULL;
             }
@@ -444,29 +444,29 @@ VulkanContext* createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
     
     clearStack(&init_stack);
 
-    const DeviceInfo* best_device_info = NULL;
+    const DeviceInfo *best_device_info = NULL;
 
     /* DEVICE SELECTION */ {
         /* request physical device count */
         u32 physical_device_count = 0;
         vkEnumeratePhysicalDevices(context->instance, &physical_device_count, NULL);
         if(physical_device_count == 0) {
-            MSG_ERROR(context->msg_callback, &CONST_STRING("failed to find any rendering device"));
+            MSG_ERROR(context->msg_callback, &TRACED_STR("failed to find any rendering device"));
             return NULL;
         }
         /* allocate physical devices array */
-        VkPhysicalDevice* physical_devices = allocateStack(&init_stack, physical_device_count * sizeof(VkPhysicalDevice), 16);
+        VkPhysicalDevice *physical_devices = allocateStack(&init_stack, physical_device_count * sizeof(VkPhysicalDevice), 16);
         if(!physical_devices) {
-            MSG_ERROR(context->msg_callback, &CONST_STRING("failed to allocate physical_devices array"));
+            MSG_ERROR(context->msg_callback, &TRACED_STR("failed to allocate physical_devices array"));
             return NULL;
         }
         /* request physical devices */
         vkEnumeratePhysicalDevices(context->instance, &physical_device_count, physical_devices);
 
         /* allocate device infos array */
-        DeviceInfo* device_infos = allocateStack(&init_stack, physical_device_count * sizeof(DeviceInfo), 16);
+        DeviceInfo *device_infos = allocateStack(&init_stack, physical_device_count * sizeof(DeviceInfo), 16);
         if(!device_infos) {
-            MSG_ERROR(context->msg_callback, &CONST_STRING("failed to allocate device_infos array"));
+            MSG_ERROR(context->msg_callback, &TRACED_STR("failed to allocate device_infos array"));
             return NULL;
         }
         /* get device_infos and count suitable devices */
@@ -479,7 +479,7 @@ VulkanContext* createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
         }
         /* if no suitable device exists */
         if(device_infos_count == 0) {
-            MSG_ERROR(context->msg_callback, &CONST_STRING("avaliable rendering devices are not suitable"));
+            MSG_ERROR(context->msg_callback, &TRACED_STR("avaliable rendering devices are not suitable"));
             return NULL;
         }
 
@@ -496,7 +496,7 @@ VulkanContext* createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
             const String no = CONST_STRING("NO");
             stringPattern(
                 &CONST_STRING("selected device { name: \"%c\" id: %u model: %u render: %s compute: %s transfer: %s device_heap: %u host_heap: %u }"),
-                (const void*[]) {
+                (const void *[]) {
                     best_device_info->name, &device_id, &device_model, 
                     (best_device_info->render_queue_id == U32_MAX) ? &no : &yes,
                     (best_device_info->compute_queue_id == U32_MAX) ? &no : &yes,
@@ -557,11 +557,12 @@ VulkanContext* createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
             .pNext = &dynamic_rendering_info
         };
         if(vkCreateDevice(best_device_info->device, &device_info, NULL, &context->device) != VK_SUCCESS) {
-            MSG_ERROR(context->msg_callback, &CONST_STRING("failed to create vulkan device"));
+            MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create vulkan device"));
             return NULL;
         }
 
-        /* set queue indices  */
+        /* set queue indices and physical device  */
+        context->physical_device = best_device_info->device;
         context->render_queue_id = best_device_info->render_queue_id;
         context->compute_queue_id = best_device_info->compute_queue_id;
         context->transfer_queue_id = best_device_info->transfer_queue_id;
@@ -576,12 +577,12 @@ VulkanContext* createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
     }
 
     /* LOAD EXTENSIONS */ {
-        if(!(context->cmd_begin_rendering = (void*)vkGetDeviceProcAddr(context->device, "vkCmdBeginRenderingKHR"))) {
-            MSG_ERROR(context->msg_callback, &CONST_STRING("failed to load vkCmdBeginRenderingKHR"));
+        if(!(context->cmd_begin_rendering = (void *)vkGetDeviceProcAddr(context->device, "vkCmdBeginRenderingKHR"))) {
+            MSG_ERROR(context->msg_callback, &TRACED_STR("failed to load vkCmdBeginRenderingKHR"));
             return NULL;
         }
-        if(!(context->cmd_end_rendering = (void*)vkGetDeviceProcAddr(context->device, "vkCmdEndRenderingKHR"))) {
-            MSG_ERROR(context->msg_callback, &CONST_STRING("failed to load vkCmdEndRenderingKHR"));
+        if(!(context->cmd_end_rendering = (void *)vkGetDeviceProcAddr(context->device, "vkCmdEndRenderingKHR"))) {
+            MSG_ERROR(context->msg_callback, &TRACED_STR("failed to load vkCmdEndRenderingKHR"));
             return NULL;
         }
     }
@@ -593,7 +594,7 @@ VulkanContext* createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
     return context;
 }
 
-void destroyVulkanContext(VulkanContext* context) {
+void destroyVulkanContext(VulkanContext *context) {
     /* INSTANCE */ {
         vkDestroyDevice(context->device, NULL);
         vkDestroySurfaceKHR(context->instance, context->surface, NULL);

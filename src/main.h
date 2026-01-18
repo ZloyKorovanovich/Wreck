@@ -13,7 +13,7 @@ typedef enum {
     MSG_CODE_WARNING = 1
 } MSG_TYPE;
 
-typedef void (*MsgCallback_pfn)(i32 type, const String* msg);
+typedef void (*MsgCallback_pfn)(i32 type, const String *msg);
 
 #define MSG_LOG(callback, msg) if(callback) {callback(MSG_CODE_SUCCESS, msg);}
 #define MSG_ERROR(callback, msg) if(callback) {callback(MSG_CODE_ERROR, msg);}
@@ -31,7 +31,6 @@ typedef void (*MsgCallback_pfn)(i32 type, const String* msg);
   ======================================================================*/
 
 typedef struct VulkanContext VulkanContext;
-typedef struct RenderContext RenderContext;
 
 typedef enum {
     VULKAN_FLAG_RESIZABLE = 0x1,
@@ -46,16 +45,39 @@ typedef struct {
     MsgCallback_pfn msg_callback;
 } VulkanContextInfo;
 
-VulkanContext* createVulkanContext(Allocate_pfn context_allocate, const VulkanContextInfo* info);
-void destroyVulkanContext(VulkanContext* context);
+VulkanContext *createVulkanContext(Allocate_pfn context_allocate, const VulkanContextInfo *info);
+void destroyVulkanContext(VulkanContext *context);
+
+/*======================================================================
+    RENDER
+  ======================================================================*/
+
+typedef struct RenderContext RenderContext;
 
 typedef struct {
-    VulkanContext* vulkan_context;
+    u32 res_x;
+    u32 res_y;
+} UpdateInfo;
+
+typedef void (*RenderUpdate_pfn) (UpdateInfo *info);
+
+typedef struct {
+    const char *vertex_shader; /* set if graphics */
+    const char *fragment_shader; /* set if graphics */
+    const char *compute_shader; /* set if compute */
+} RenderProgramInfo;
+
+typedef struct {
+    VulkanContext *vulkan_context;
+    /* render programs */
+    RenderProgramInfo *render_programs; /* program ids will be preserved for access */
+    u32 render_program_count;
+    /* callbacks */
     MsgCallback_pfn msg_callback;
+    RenderUpdate_pfn update_callback;
 } RenderContextInfo;
 
-RenderContext* createRenderContext(Allocate_pfn context_allocate, const RenderContextInfo* info);
-void destroyRenderContext(RenderContext* context);
-
+RenderContext* createRenderContext(Allocate_pfn context_allocate, const RenderContextInfo *info);
+void destroyRenderContext(RenderContext *context);
 
 #endif

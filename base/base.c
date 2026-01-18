@@ -11,13 +11,13 @@
 
     /* ARENA */
 
-    b32 createArena(Arena* arena, u64 limit, u64 expansion) {
+    b32 createArena(Arena *arena, u64 limit, u64 expansion) {
         /* validate allocation, align to page size */
         limit = ALIGN(((limit == 0) ? ARENA_DEFAULT_VIRTUAL_SIZE : limit), ARENA_DEFAULT_EXPANSION);
         /* validate expansion, align it to 4 KB at least */
         expansion = ALIGN((expansion == 0) ? ARENA_DEFAULT_EXPANSION : expansion, 4 * 1024);
         /* reserve virtual address space */
-        void* virtual_allocation = VirtualAlloc(NULL, limit, MEM_RESERVE, PAGE_READWRITE);
+        void *virtual_allocation = VirtualAlloc(NULL, limit, MEM_RESERVE, PAGE_READWRITE);
         if(!virtual_allocation) {
             return FALSE;
         }
@@ -31,7 +31,7 @@
         return TRUE;
     }
 
-    void* allocateArena(Arena* arena, u64 size, u64 aligment) {
+    void *allocateArena(Arena *arena, u64 size, u64 aligment) {
         if(size == 0) {
             return NULL;
         }
@@ -56,12 +56,12 @@
         return (byte*)arena->begin + alloc_offset;
     }
 
-    void clearArena(Arena* arena) {
+    void clearArena(Arena *arena) {
         /* move end to begin and assume everything that was begin and end will be now overwritten */
         arena->end = arena->begin;
     }
 
-    b32 resetArena(Arena* arena) {
+    b32 resetArena(Arena *arena) {
         /* free on windows might fail need to specify size if releasing physical */
         if(!VirtualFree(arena->begin, arena->physical_size, MEM_DECOMMIT)) {
             return FALSE;
@@ -71,7 +71,7 @@
         return TRUE;
     }
 
-    b32 freeArena(Arena* arena) {
+    b32 freeArena(Arena *arena) {
         /* free on windows might fail no need to specify size if releasing virtual */
         if(!VirtualFree(arena->begin, 0, MEM_RELEASE)) {
             return FALSE;
@@ -82,13 +82,13 @@
 
     /* STACK */
 
-    b32 createStack(Stack* stack, u64 limit, u64 expansion) {
+    b32 createStack(Stack *stack, u64 limit, u64 expansion) {
         /* validate allocation, align to page size */
         limit = ALIGN((limit == 0) ? STACK_DEFAULT_VIRTUAL_SIZE : limit, STACK_DEFAULT_PAGE_SIZE);
         /* validate expansion, align it to 4 KB at least */
         expansion = ALIGN((expansion == 0) ? ARENA_DEFAULT_EXPANSION : expansion, 4 * 1024);
         /* reserve virtual address space */
-        void* virtual_allocation = VirtualAlloc(NULL, limit, MEM_RESERVE, PAGE_READWRITE);
+        void *virtual_allocation = VirtualAlloc(NULL, limit, MEM_RESERVE, PAGE_READWRITE);
         if(!virtual_allocation) {
             return FALSE;
         }
@@ -103,7 +103,7 @@
         return TRUE;
     }
 
-    void* allocateStack(Stack* stack, u64 size, u64 aligment) {
+    void *allocateStack(Stack *stack, u64 size, u64 aligment) {
         if(size == 0) {
             return NULL;
         }
@@ -128,7 +128,7 @@
         return (byte*)stack->begin + alloc_offset;
     }
 
-    void* pushStack(Stack* stack) {
+    void *pushStack(Stack *stack) {
         void** push_slot = allocateStack(stack, sizeof(void*), sizeof(void*));
         if(!push_slot) {
             return NULL;
@@ -138,7 +138,7 @@
         return stack->edge;
     }
 
-    void* popStack(Stack* stack) {
+    void *popStack(Stack *stack) {
         if(stack->begin == stack->edge) {
             return NULL;
         }
@@ -147,12 +147,12 @@
         return stack->edge;
     }
 
-    void clearStack(Stack* stack) {
+    void clearStack(Stack *stack) {
         stack->edge = stack->begin;
         stack->end = stack->begin;
     }
 
-    b32 resetStack(Stack* stack) {
+    b32 resetStack(Stack *stack) {
         /* free on windows might fail need to specify size if releasing physical */
         if(!VirtualFree(stack->begin, stack->physical_size, MEM_DECOMMIT)) {
             return FALSE;
@@ -163,7 +163,7 @@
         return TRUE;
     }
 
-    b32 freeStack(Stack* stack) {
+    b32 freeStack(Stack *stack) {
         /* free on windows might fail no need to specify size if releasing virtual */
         if(!VirtualFree(stack->begin, 0, MEM_RELEASE)) {
             return FALSE;
@@ -176,28 +176,28 @@
 
 /* MEMORY */
 
-void setMemory(void* dst, const void* value, u64 size, u64 count) {
+void setMemory(void *dst, const void *scr, u64 size, u64 count) {
     
 }
 
-void copyMemory(void* dst, const void* src, u64 size) {
+void copyMemory(void *dst, const void *src, u64 size) {
     
 }
 
 /* STRINGS */
 
-void stringZero(String* str) {
+void stringZero(String *str) {
     str->size = 0;
 }
 
-b32 stringAddString(String* dst, const String* src) {
+b32 stringAddString(String *dst, const String *src) {
     u64 new_size = dst->size + src->size;
     /* if string length + '\0' is bigger than capacity, return false */
     if(new_size + 1 > dst->capacity) {
         return FALSE;
     }
     /* set iterator to the end of dst (on '\0' symbol) */
-    char* copy_begin = &dst->string[dst->size];
+    char *copy_begin = &dst->string[dst->size];
     /* copy with '\0' in the end */
     for(u64 i = 0; i <= src->size; i++) {
         copy_begin[i] = src->string[i];
@@ -206,7 +206,7 @@ b32 stringAddString(String* dst, const String* src) {
     return TRUE;
 }
 
-b32 stringAddCstring(String* dst, const char* src) {
+b32 stringAddCstring(String *dst, const char *src) {
     while (*src) {
         if(dst->size + 1 > dst->capacity) {
             dst->string[dst->size] = '\0';
@@ -219,7 +219,7 @@ b32 stringAddCstring(String* dst, const char* src) {
     return TRUE;
 }
 
-b32 stringAddChar(String* dst, char c) {
+b32 stringAddChar(String *dst, char c) {
     if(dst->size + 1 == dst->capacity) {
         return FALSE;
     }
@@ -228,7 +228,7 @@ b32 stringAddChar(String* dst, char c) {
     return TRUE;
 }
 
-b32 stringAddU64(String* dst, u64 num) {
+b32 stringAddU64(String *dst, u64 num) {
     if(num == 0) {
         if(dst->size + 1 > dst->capacity) {
             return FALSE;
@@ -253,16 +253,16 @@ b32 stringAddU64(String* dst, u64 num) {
     return TRUE;
 }
 
-b32 stringAddI64(String* dst, i64 num) {
+b32 stringAddI64(String *dst, i64 num) {
     return FALSE;
 }
 
-b32 stringAddf64(String* dst, u64 num) {
+b32 stringAddf64(String *dst, u64 num) {
     return FALSE;
 }
 
 
-b32 stringUpFolder(String* path) {
+b32 stringUpFolder(String *path) {
     for(u64 i = path->size - 1; i >= 0; i--) {
         if(path->string[i] == '/' || path->string[i] == '\\') {
             path->string[i] = '\0';
@@ -273,7 +273,7 @@ b32 stringUpFolder(String* path) {
     return FALSE;
 }
 
-b32 stringPattern(const String* pattern, const void** elements, String* out_string) {
+b32 stringPattern(const String *pattern, const void** elements, String *out_string) {
     out_string->size = 0;
     u32 element_iterator = 0;
     for(u32 i = 0; i < pattern->size; i++) {
@@ -310,7 +310,7 @@ b32 stringPattern(const String* pattern, const void** elements, String* out_stri
 }
 
 
-b32 stringCmp(const String* a, const String* b) {
+b32 stringCmp(const String *a, const String *b) {
     if(a->size != b->size) {
         return FALSE;
     }
@@ -322,7 +322,7 @@ b32 stringCmp(const String* a, const String* b) {
     return TRUE;
 }
 
-b32 cstringCmp(const char* a, const char* b) {
+b32 cstringCmp(const char *a, const char *b) {
     while (*a && *b) {
         if(*a++ != *b++) {
             return FALSE;
@@ -331,7 +331,7 @@ b32 cstringCmp(const char* a, const char* b) {
     return (*a == *b);
 }
 
-void cstringCpy(char* dst, const char* src) {
+void cstringCpy(char *dst, const char *src) {
     while ((*dst++ = *src++));
 }
 
@@ -343,21 +343,21 @@ static struct {
     HANDLE error;
 } s_std_handles = {0};
 
-b32 printConsole(const String* string) {
+b32 printConsole(const String *string) {
     if(s_std_handles.out == NULL) {
         s_std_handles.out = GetStdHandle(STD_OUTPUT_HANDLE);
     }
     return WriteFile(s_std_handles.out, string->string, string->size, NULL, NULL);
 }
 
-b32 errorConsole(const String* string) {
+b32 errorConsole(const String *string) {
     if(s_std_handles.error == NULL) {
         s_std_handles.error = GetStdHandle(STD_ERROR_HANDLE);
     }
     return WriteFile(s_std_handles.error, string->string, string->size, NULL, NULL);
 }
 
-b32 scanConsole(String* string) {
+b32 scanConsole(String *string) {
     if(s_std_handles.in == NULL) {
         s_std_handles.in = GetStdHandle(STD_INPUT_HANDLE);
     }
@@ -365,7 +365,7 @@ b32 scanConsole(String* string) {
 }
 
 
-b32 file2Buffer(const String* path, Buffer* buffer, Allocate_pfn realloc_callback) {
+b32 file2Buffer(const String *path, Buffer *buffer, Allocate_pfn realloc_callback) {
     HANDLE file = CreateFile(path->string, FILE_READ_ACCESS, 0, NULL, 0, 0, NULL);
     if(!file) {
         return FALSE;
@@ -381,7 +381,7 @@ b32 file2Buffer(const String* path, Buffer* buffer, Allocate_pfn realloc_callbac
             return FALSE;
         }
         /* if callback exists try to reallocate buffer */
-        void* realloc_pointer = realloc_callback(file_size, 1);
+        void *realloc_pointer = realloc_callback(file_size, 1);
         if(!realloc_pointer) {
             CloseHandle(file);
             return FALSE;
@@ -402,6 +402,6 @@ b32 file2Buffer(const String* path, Buffer* buffer, Allocate_pfn realloc_callbac
     return TRUE;
 }
 
-b32 buffer2File(const String* path, const Buffer* buffer) {
+b32 buffer2File(const String *path, const Buffer *buffer) {
     return FALSE;
 }

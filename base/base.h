@@ -80,62 +80,62 @@ typedef unsigned b32;
 
 
 typedef struct {
-    void* begin;
-    void* end;
+    void *begin;
+    void *end;
     u64 physical_size;
     u64 virtual_size;
     u64 expansion;
 } Arena;
 
 /* if limit is default, use limit = 0 */
-b32 createArena(Arena* arena, u64 limit, u64 expansion);
+b32 createArena(Arena *arena, u64 limit, u64 expansion);
 /* if aligment is any use 0 */
-void* allocateArena(Arena* arena, u64 size, u64 aligment);
+void *allocateArena(Arena *arena, u64 size, u64 aligment);
 /* clears arena, so that you can overwrite memory */
-void clearArena(Arena* arena);
+void clearArena(Arena *arena);
 /* realses physical memory, but keeps virtual */
-b32 resetArena(Arena* arena);
+b32 resetArena(Arena *arena);
 /* frees arena memory */
-b32 freeArena(Arena* arena);
+b32 freeArena(Arena *arena);
 
 
 typedef struct {
-    void* begin;
-    void* edge;
-    void* end;
+    void *begin;
+    void *edge;
+    void *end;
     u64 physical_size;
     u64 virtual_size;
     u64 expansion;
 } Stack;
 
 /* if limit is default, use limit = 0 */
-b32 createStack(Stack* stack, u64 limit, u64 expansion);
+b32 createStack(Stack *stack, u64 limit, u64 expansion);
 /* if aligment default any use 0 */
-void* allocateStack(Stack* stack, u64 size, u64 aligment);
+void *allocateStack(Stack *stack, u64 size, u64 aligment);
 /* saves current edge and sets edge to end pointer */
-void* pushStack(Stack* stack);
+void *pushStack(Stack *stack);
 /* the oposite of push */
-void* popStack(Stack* stack);
+void *popStack(Stack *stack);
 /* clears everything since begin, so that you can overwrite memory */
-void clearStack(Stack* stack);
+void clearStack(Stack *stack);
 /* realses physical memory, but keeps virtual */
-b32 resetStack(Stack* stack);
+b32 resetStack(Stack *stack);
 /* frees arena memory */
-b32 freeStack(Stack* stack);
+b32 freeStack(Stack *stack);
 
 /*======================================================================
     MEMORY
   ======================================================================*/
 
-typedef void* (*Allocate_pfn)(u64 size, u64 aligment);
+typedef void *(*Allocate_pfn)(u64 size, u64 aligment);
 
 typedef struct {
-    void* buffer;
+    void *buffer;
     u64 size;
 } Buffer;
 
-void setMemory(void* dst, const void* value, u64 size, u64 count);
-void copyMemory(void* dst, const void* src, u64 size);
+void setMemory(void *dst, const void *value, u64 size, u64 count);
+void copyMemory(void *dst, const void *src, u64 size);
 
 /*======================================================================
     STRINGS
@@ -143,41 +143,41 @@ void copyMemory(void* dst, const void* src, u64 size);
 
 /* even though it has size, its always zero terminated */
 typedef struct {
-    char* string;
+    char *string;
     u64 size;
     u64 capacity;
 } String;
 
 #define CONST_STRING(cstr) ((String){(char *)cstr, sizeof(cstr)})
 
-void stringZero(String* str);
+void stringZero(String *str);
 
-b32 stringAddString(String* dst, const String* src);
-b32 stringAddCstring(String* dst, const char* src);
+b32 stringAddString(String *dst, const String *src);
+b32 stringAddCstring(String *dst, const char *src);
 
-b32 stringAddChar(String* dst, char c);
-b32 stringAddU64(String* dst, u64 num);
-b32 stringAddI64(String* dst, i64 num);
-b32 stringAddf64(String* dst, u64 num);
+b32 stringAddChar(String *dst, char c);
+b32 stringAddU64(String *dst, u64 num);
+b32 stringAddI64(String *dst, i64 num);
+b32 stringAddf64(String *dst, u64 num);
 
 /* used for moving up in directories */
-b32 stringUpFolder(String* path);
+b32 stringUpFolder(String *path);
 /* inserts elements into string %c cstring %s string %u u64 %*/
-b32 stringPattern(const String* pattern, const void** elements, String* out_string);
+b32 stringPattern(const String *pattern, const void **elements, String *out_string);
 
-b32 stringCmp(const String* a, const String* b);
-b32 cstringCmp(const char* a, const char* b);
-void cstringCpy(char* dst, const char* src);
+b32 stringCmp(const String *a, const String *b);
+b32 cstringCmp(const char *a, const char *b);
+void cstringCpy(char *dst, const char *src);
 
 /*======================================================================
     FILES
   ======================================================================*/
 
-b32 printConsole(const String* string);
-b32 errorConsole(const String* string);
-b32 scanConsole(String* string);
+b32 printConsole(const String *string);
+b32 errorConsole(const String *string);
+b32 scanConsole(String *string);
 
-b32 file2Buffer(const String* path, Buffer* buffer, Allocate_pfn realloc_callback);
-b32 buffer2File(const String* path, const Buffer* buffer);
+b32 file2Buffer(const String *path, Buffer *buffer, Allocate_pfn realloc_callback);
+b32 buffer2File(const String *path, const Buffer *buffer);
 
 #endif

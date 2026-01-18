@@ -83,10 +83,11 @@ void stringPatternTest(void) {
         printConsole(&CONST_STRING("NO WAY!\n"));
     }
 
+    arenaTest();
     printConsole(&print_string);
 }
 
-i32 main(i32 argc, char** argv) {
+i32 main(i32 argc, char **argv) {
 
     stringPatternTest();
 
