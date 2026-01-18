@@ -11,6 +11,26 @@ typedef enum {
     DEVICE_MODEL_INTEGRATED = 2 /* device local is host visible, do not use staging buffers */
 } DeviceModel;
 
+typedef struct {
+    u64 offset;
+    u64 size;
+} VramRegion;
+
+typedef struct {
+    u64 size;
+    u64 aligment;
+    u32 memory_type_bits;
+    u32 mandatory_flags;
+    u32 restricted_flags;
+} VramInfo;
+
+typedef struct {
+    VkDeviceMemory memory;
+    u64 size;
+    u32 heap_id;
+    u32 memory_id;
+} Vram;
+
 /* context of vulkan */
 struct VulkanContext {
     /* vulkan and glfw objects */
@@ -31,6 +51,7 @@ struct VulkanContext {
     u32 transfer_queue_id;
     /* memory*/
     DeviceModel device_model;
+    VkPhysicalDeviceMemoryProperties memory_properties;
     /* dynamic rendering ext */
     PFN_vkCmdBeginRenderingKHR cmd_begin_rendering;
     PFN_vkCmdEndRenderingKHR cmd_end_rendering;
@@ -40,17 +61,10 @@ struct VulkanContext {
     VkDebugUtilsMessengerEXT debug_messenger;
 };
 
+b32 allocateVram(VulkanContext *vulkan_context, const VramInfo *info, Vram *vram);
+void freeVram(VulkanContext *vulkan_context, Vram *vram);
 
-typedef struct {
-    u64 size;
-    u64 offset;
-} VramResource;
-
-typedef struct {
-    u64 memory_size;
-    u32 memory_type_bits;
-    u32 allocations_count; /* for debug */
-} VramBlock;
+#define MAX_SWAPCHAIN_IMAGES (16)
 
 typedef struct {
     VkColorSpaceKHR color_space;
@@ -64,6 +78,12 @@ typedef struct {
     VkViewport viewport;
 } ScreenSettings;
 
+
+/* TEXTURE */
+/* MESH */
+/* DYNAMIC MESH */
+/* STORAGE BUFFER */
+
 /* context of render queue */
 struct RenderContext {
     VulkanContext *vulkan_context;
@@ -73,21 +93,20 @@ struct RenderContext {
     RenderSettings render_settings;
     ScreenSettings screen_settings;
     /* screen objects */
+    u32 swapchain_image_count;
     VkSwapchainKHR swapchain;
     VkImage *swapchain_images;
     VkImageView *swapchain_image_views;
-    u32 swapchain_image_count;
-
     VkImage depth_image;
     VkImageView depth_image_view;
-    VramResource depth_vram;
+    VramRegion depth_vram;
     /* callback for logs and errors */
     MsgCallback_pfn msg_callback;
     /* user control */
     RenderUpdate_pfn update_callback;
-    /* memory */
-    VramBlock images_block;
-    VkDeviceMemory images_memory;
+    /* resources */
+    VkDescriptorPool descriptor_pool;
+    Vram images_vram;
 };
 
 #endif

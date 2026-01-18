@@ -26,6 +26,7 @@ const char *c_required_device_extension_names[] = {
 
 typedef struct {
     VkPhysicalDevice device;
+    VkPhysicalDeviceMemoryProperties memory_properties;
     /* queue layout */
     u32 render_queue_id;
     u32 compute_queue_id;
@@ -33,9 +34,6 @@ typedef struct {
     /* device info */
     DeviceModel device_model;
     u32 device_id;
-    /* memory */
-    u64 device_heap;
-    u64 host_heap;
     char name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
 } DeviceInfo;
 
@@ -123,25 +121,9 @@ b32 checkPhysicalDevice(VkPhysicalDevice device, MsgCallback_pfn msg_callback, D
         if(device_properties->deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
             info->device_model = DEVICE_MODEL_INTEGRATED;
         }
-    }
 
-    /* DEVICE MEMORY */ {
-        VkPhysicalDeviceMemoryProperties *memory_properties = allocateStack(stack, sizeof(VkPhysicalDeviceMemoryProperties), 16);
-        if(!memory_properties) {
-            MSG_ERROR(msg_callback, &CONST_STRING("failed to allocate memory_properties"));
-            goto _fail;
-        }
-        vkGetPhysicalDeviceMemoryProperties(device, memory_properties);
-
-        /* get device heap info */
-        const VkMemoryHeap *memory_heaps = memory_properties->memoryHeaps;
-        for(u32 i = 0; i < memory_properties->memoryHeapCount; i++) {
-            if(memory_heaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
-                info->device_heap = MAX(info->device_heap, memory_heaps[i].size); 
-            } else {
-                info->host_heap = MAX(info->host_heap, memory_heaps[i].size); 
-            }
-        }
+        /* memory properties */
+        vkGetPhysicalDeviceMemoryProperties(device, &info->memory_properties);
     }
 
     /* _success: */ {
@@ -160,11 +142,61 @@ const DeviceInfo *compareDevices(const DeviceInfo *a, const DeviceInfo *b) {
     /* check queues */
     if(b->compute_queue_id != U32_MAX && a->compute_queue_id == U32_MAX) return b;
     if(b->transfer_queue_id != U32_MAX && a->transfer_queue_id == U32_MAX) return b;
-    /* check memory */
-    if(b->device_heap > a->device_heap) return b;
-    if(b->host_heap > a->host_heap) return b;
     /* default is a */
     return a;
+}
+
+
+b32 allocateVram(VulkanContext *vulkan_context, const VramInfo *info, Vram *vram) {
+    if(info->size == 0 || info->memory_type_bits == 0) return FALSE;
+
+    const VkMemoryHeap *memory_heaps = vulkan_context->memory_properties.memoryHeaps;
+    const VkMemoryType *memory_types = vulkan_context->memory_properties.memoryTypes;
+    const u32 memory_type_count = vulkan_context->memory_properties.memoryTypeCount;
+
+    u32 memory_id = U32_MAX;
+    u32 heap_id = U32_MAX;
+    /* check memory types for requirements */
+    for(u32 i = 0; i < memory_type_count; i++) {
+        const u32 flags = memory_types[i].propertyFlags;
+        /* not sutiable conditions */
+        if((flags & info->mandatory_flags) != info->mandatory_flags) continue;
+        if(flags & info->restricted_flags) continue;
+        if(!((info->memory_type_bits >> i) & 0x1)) continue;
+        if((memory_heaps[memory_types[i].heapIndex].size < info->size)) continue;
+
+        memory_id = i;
+        heap_id = memory_types[i].heapIndex;
+        goto _found_memory_id;
+    }
+    return FALSE;
+    
+    _found_memory_id: {};
+
+    /* allocate memory */
+    VkMemoryAllocateInfo allocate_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .memoryTypeIndex = memory_id,
+        .allocationSize = info->size
+    };
+    VkDeviceMemory device_memory = NULL;
+    if(vkAllocateMemory(vulkan_context->device, &allocate_info, NULL, &device_memory) != VK_SUCCESS) {
+        return FALSE;
+    }
+
+    *vram = (Vram) {
+        .memory = device_memory,
+        .size = info->size,
+        .heap_id = heap_id,
+        .memory_id = memory_id
+    };
+    return TRUE;
+}
+
+void freeVram(VulkanContext *vulkan_context, Vram *vram) {
+    vkFreeMemory(vulkan_context->device, vram->memory, NULL);
+    vulkan_context->memory_properties.memoryHeaps[vram->heap_id].size += vram->size;
+    *vram = (Vram){0};
 }
 
 
@@ -177,7 +209,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL validationDebugCallback(
         .capacity = 512
     };
 
-    stringPattern(&CONST_STRING("vk message :: %c\n"), (const void *[]){callback_data->pMessage}, &string);
+    stringPattern(&CONST_STRING(":: vk message :: %c\n"), (const void *[]){callback_data->pMessage}, &string);
     printConsole(&string);
     return !(severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT);
 }
@@ -495,13 +527,12 @@ VulkanContext *createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
             const String yes = CONST_STRING("YES");
             const String no = CONST_STRING("NO");
             stringPattern(
-                &CONST_STRING("selected device { name: \"%c\" id: %u model: %u render: %s compute: %s transfer: %s device_heap: %u host_heap: %u }"),
+                &CONST_STRING("selected device { name: \"%c\" id: %u model: %u render: %s compute: %s transfer: %s }"),
                 (const void *[]) {
                     best_device_info->name, &device_id, &device_model, 
                     (best_device_info->render_queue_id == U32_MAX) ? &no : &yes,
                     (best_device_info->compute_queue_id == U32_MAX) ? &no : &yes,
-                    (best_device_info->transfer_queue_id == U32_MAX) ? &no : &yes,
-                    &best_device_info->device_heap, &best_device_info->host_heap
+                    (best_device_info->transfer_queue_id == U32_MAX) ? &no : &yes
                 },
                 &msg_string
             );
@@ -563,6 +594,7 @@ VulkanContext *createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
 
         /* set queue indices and physical device  */
         context->physical_device = best_device_info->device;
+        context->memory_properties = best_device_info->memory_properties;
         context->render_queue_id = best_device_info->render_queue_id;
         context->compute_queue_id = best_device_info->compute_queue_id;
         context->transfer_queue_id = best_device_info->transfer_queue_id;

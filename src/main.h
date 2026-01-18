@@ -68,10 +68,16 @@ typedef struct {
 } RenderProgramInfo;
 
 typedef struct {
+    const char *mesh;
+} MeshInfo;
+
+typedef struct {
     VulkanContext *vulkan_context;
     /* render programs */
     RenderProgramInfo *render_programs; /* program ids will be preserved for access */
+    MeshInfo *static_meshes;
     u32 render_program_count;
+    u32 static_mesh_count;
     /* callbacks */
     MsgCallback_pfn msg_callback;
     RenderUpdate_pfn update_callback;

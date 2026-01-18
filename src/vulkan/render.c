@@ -76,8 +76,10 @@ b32 configureRenderSettings(const VulkanContext *vulkan_context, Stack* stack, M
 b32 createScreenTextures(RenderContext *render_context) {
     VulkanContext *vulkan_context = render_context->vulkan_context;
 
+    /* requrest surface capabilities */
     VkSurfaceCapabilitiesKHR surface_capabilities = (VkSurfaceCapabilitiesKHR){0};
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(vulkan_context->physical_device, vulkan_context->surface, &surface_capabilities);
+    /* if capabilities have invalid size, for example window is hidden, wait in a loop */
     while(surface_capabilities.currentExtent.width == 0 || surface_capabilities.currentExtent.height == 0) {
         /* dont forget to proccess events or everything will stall forever */
         glfwPollEvents();
@@ -90,9 +92,15 @@ b32 createScreenTextures(RenderContext *render_context) {
         min_image_count = MIN(min_image_count, surface_capabilities.maxImageCount);
     }
 
+    /* if too many images should be used we cant fit them into array that we have */
+    if(min_image_count > MAX_SWAPCHAIN_IMAGES) {
+        MSG_ERROR(render_context->msg_callback, &TRACED_STR("swapchain min image count is too big"));
+        return FALSE;
+    }
+
+    /* clamp resolution and set screen settings */
     u32 res_x = CLAMP(surface_capabilities.minImageExtent.width, surface_capabilities.maxImageExtent.width, surface_capabilities.currentExtent.width);
     u32 res_y = CLAMP(surface_capabilities.minImageExtent.height, surface_capabilities.maxImageExtent.height, surface_capabilities.currentExtent.height);
-
     render_context->screen_settings = (ScreenSettings) {
         .extent = (VkExtent2D) {
             .width = res_x,
@@ -131,6 +139,7 @@ b32 createScreenTextures(RenderContext *render_context) {
             return FALSE;
         }
 
+        /* check if swapchain is recreated or created for the first time */
         if(swapchain_info.oldSwapchain) {
             /* if its not a first swapchain, just recreate images and views */
             for(u32 i = 0; i < render_context->swapchain_image_count; i++) {
@@ -142,16 +151,6 @@ b32 createScreenTextures(RenderContext *render_context) {
         } else {
             /* if swapchain is created for the first time, we need to allocate arrays of images and views */
             vkGetSwapchainImagesKHR(vulkan_context->device, render_context->swapchain, &render_context->swapchain_image_count, NULL);
-            void *swapchain_arrays = allocateArena(&render_context->resource_arena, sizeof(void *) * render_context->swapchain_image_count * 2, 8);
-            /* allocate images and image views arrays */
-            if(!swapchain_arrays) {
-                MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate swapchain_arrays"));
-                return FALSE;
-            }
-            /* get array pointers from group allocation */
-            render_context->swapchain_images = (VkImage *)swapchain_arrays;
-            render_context->swapchain_image_views = (VkImageView *)((u8 *)swapchain_arrays + render_context->swapchain_image_count * sizeof(void *));
-            /* get images from swapchain */
             vkGetSwapchainImagesKHR(vulkan_context->device, render_context->swapchain, &render_context->swapchain_image_count, render_context->swapchain_images);
         }
 
@@ -178,6 +177,60 @@ b32 createScreenTextures(RenderContext *render_context) {
                 MSG_ERROR(vulkan_context->msg_callback, &TRACED_STR("failed to create swapchain image view"));
                 return FALSE;
             }
+        }
+    }
+
+    /* DEPTH BUFFER */ {
+        /* if depth image is already created we need to destroy it and its view */
+        if(render_context->depth_image) {
+            /* if recreating depth image */
+            vkDestroyImageView(vulkan_context->device, render_context->depth_image_view, NULL);
+            vkDestroyImage(vulkan_context->device, render_context->depth_image, NULL);
+        }
+
+        VkImageCreateInfo depth_image_info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .extent = (VkExtent3D){
+                .width = render_context->screen_settings.extent.width, 
+                .height = render_context->screen_settings.extent.height, 
+                .depth = 1
+            },
+            .format = render_context->render_settings.depth_format,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = 1,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+        };
+        if(vkCreateImage(vulkan_context->device,&depth_image_info, NULL, &render_context->depth_image) != VK_SUCCESS) {
+            MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to create depth image"));
+            return FALSE;
+        }
+        /* bind memory to depth image before creating view */
+        if(vkBindImageMemory(vulkan_context->device, render_context->depth_image, render_context->images_vram.memory, render_context->depth_vram.offset) != VK_SUCCESS) {
+            MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to bind depth image memory"));
+            return FALSE;
+        }
+
+        /* create image view*/
+        const VkImageViewCreateInfo depth_view_info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .image = render_context->depth_image,
+            .format = render_context->render_settings.depth_format,
+            .subresourceRange = (VkImageSubresourceRange) {
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+                .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT
+            }
+        };
+        if(vkCreateImageView(vulkan_context->device, &depth_view_info, NULL, &render_context->depth_image_view) != VK_SUCCESS) {
+            MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to create render depth image view"));
+            return FALSE;
         }
     }
 
@@ -211,28 +264,124 @@ RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderCo
         .update_callback = info->update_callback
     };
 
+    VulkanContext *vulkan_context = info->vulkan_context;
+
+    /* allocate arena for resources, this arena has same lifetime as render context that is created */
     if(!createArena(&context->resource_arena, 1024 * 1024 * 256, 1024 * 64)) {
         MSG_ERROR(context->msg_callback, &TRACED_STR("failed to allocate resource arena"));
         return NULL;
     }
 
+    /* create stack allocator, which is used during init (this function scope) */
     Stack init_stack = (Stack){0};
     if(!createStack(&init_stack, 1024 * 1024 * 256, 1024 * 64)) {
         MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create render init_stack"));
         return NULL;
     }
 
+    /* configure render formats for depth color etc */
     if(!configureRenderSettings(context->vulkan_context, &init_stack, context->msg_callback, &context->render_settings)) {
         MSG_ERROR(context->msg_callback, &TRACED_STR("failed to confiure render settings"));
         return NULL;
     }
 
-    if(!createScreenTextures(context)) {
-        MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create screen textures"));
+    /* IMAGES MEMORY LAYOUT */ {
+        VramInfo images_alloc_info = {.memory_type_bits = U32_MAX};
+        
+        if(vulkan_context->device_model == DEVICE_MODEL_DESCRETE) {
+            images_alloc_info.mandatory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+            images_alloc_info.restricted_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+        }
+        if(vulkan_context->device_model == DEVICE_MODEL_INTEGRATED) {
+            images_alloc_info.mandatory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        }
+
+        i32 max_screen_res_x = 0;
+        i32 max_screen_res_y = 0;
+
+        /* DEPTH IMAGE */ {
+            /* get monitors and find their max size */
+            i32 monitor_count = 0;
+            GLFWmonitor **monitors = glfwGetMonitors(&monitor_count);
+            for(i32 i = 0; i < monitor_count; i++) {
+                const GLFWvidmode *video_mode = glfwGetVideoMode(monitors[i]);
+                max_screen_res_x = MAX(max_screen_res_x, video_mode->width);
+                max_screen_res_y = MAX(max_screen_res_y, video_mode->height);
+            }
+
+            /* create depth image with max resolution */
+            VkImage depth_prototype = NULL;
+            VkImageCreateInfo depth_prototype_info = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                .imageType = VK_IMAGE_TYPE_2D,
+                .extent = (VkExtent3D){
+                    .width = max_screen_res_x, 
+                    .height = max_screen_res_y, 
+                    .depth = 1
+                },
+                .format = context->render_settings.depth_format,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .samples = 1,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+            };
+            if(vkCreateImage(vulkan_context->device, &depth_prototype_info, NULL, &depth_prototype) != VK_SUCCESS) {
+                MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create depth image prototype for max resolution"));
+                return NULL;
+            }
+
+            VkMemoryRequirements depth_memory_requirements = (VkMemoryRequirements){0};
+            vkGetImageMemoryRequirements(vulkan_context->device, depth_prototype, &depth_memory_requirements);
+            /* destroy prototype image, because its not real */
+            vkDestroyImage(vulkan_context->device, depth_prototype, NULL);
+
+            u64 start_offset = ALIGN(images_alloc_info.size, depth_memory_requirements.alignment);
+
+            /* fill memory descriptor struct */
+            context->depth_vram = (VramRegion) {
+                .offset = start_offset,
+                .size = depth_memory_requirements.size
+            };
+
+            images_alloc_info.size = start_offset + depth_memory_requirements.size;
+            images_alloc_info.memory_type_bits &= depth_memory_requirements.memoryTypeBits;
+        }
+        
+        if(!images_alloc_info.memory_type_bits) {
+            MSG_ERROR(context->msg_callback, &TRACED_STR("incorrect resource groupping, memory type bits became 0"));
+            return NULL;
+        }
+
+        /* CALL TO ALLOCATOR */ {
+            if(!allocateVram(vulkan_context, &images_alloc_info, &context->images_vram)) {
+                MSG_ERROR(context->msg_callback, &TRACED_STR("failed to allocate images vram"));
+                return NULL;
+            }
+        }
     }
 
-    if(!createScreenTextures(context)) {
-        MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create screen textures 2"));
+    /* MESHES MEMORY LAYOUT */ {
+        
+    }
+
+    /* SCREEN TEXTURES */ {
+        /* allocate space on resource arena for VkImages and VkImageViews of swapchain, they are handles of resources (pointers) */
+        void *swapchain_image_buffer = allocateArena(&context->resource_arena, MAX_SWAPCHAIN_IMAGES * 2 * sizeof(void *), 8);
+        if(!swapchain_image_buffer) {
+            MSG_ERROR(context->msg_callback, &TRACED_STR("failed to allocate swapchain_image_buffer"));
+            return NULL;
+        }
+        /* offset pointers, beacuse we allocated space for 2 arrays at once */
+        context->swapchain_images = (VkImage *)swapchain_image_buffer;
+        context->swapchain_image_views = (VkImageView *)((void *)swapchain_image_buffer + MAX_SWAPCHAIN_IMAGES);
+
+        /* create screen textures */
+        if(!createScreenTextures(context)) {
+            MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create screen textures"));
+            return NULL;
+        }
     }
 
     return context;
@@ -246,6 +395,13 @@ void destroyRenderContext(RenderContext *context) {
             vkDestroyImageView(vulkan_context->device, context->swapchain_image_views[i], NULL);
         }
         vkDestroySwapchainKHR(vulkan_context->device, context->swapchain, NULL);
+        vkDestroyImageView(vulkan_context->device, context->depth_image_view, NULL);
+        vkDestroyImage(vulkan_context->device, context->depth_image, NULL);
+    }
+
+    /* FREE MEMORY */ {
+        freeVram(vulkan_context, &context->images_vram);
+        freeArena(&context->resource_arena);
     }
 
     *context = (RenderContext){0};

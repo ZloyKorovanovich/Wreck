@@ -48,12 +48,20 @@ i32 main(i32 argc, char **argv) {
         .msg_callback = &msgCallback
     };
     VulkanContext *vulkan_context = createVulkanContext(&allocateContext, &vulkan_info);
+    if(!vulkan_context) {
+        MSG_ERROR(msgCallback, &TRACED_STR("failed to create vulkan_context"));
+        return -2;
+    }
 
     RenderContextInfo render_info = {
         .vulkan_context = vulkan_context,
         .msg_callback = &msgCallback
     };
     RenderContext *render_context = createRenderContext(&allocateContext, &render_info);
+    if(!render_context) {
+        MSG_ERROR(msgCallback, &TRACED_STR("failed to create render_context"));
+        return -3;
+    }
 
     destroyRenderContext(render_context);
     destroyVulkanContext(vulkan_context);
