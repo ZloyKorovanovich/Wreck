@@ -1,9 +1,9 @@
 #ifndef VULKAN_INCLUDED
 #define VULKAN_INCLUDED
 
-#include "../main.h"
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
+#include "../main.h"
 
 typedef enum {
     DEVICE_MODEL_NONE = 0,
@@ -71,13 +71,24 @@ typedef struct {
     VkFormat color_format;
     VkFormat depth_format;
     VkPresentModeKHR present_mode;
+    VkExtent2D extent;
 } RenderSettings;
 
 typedef struct {
-    VkExtent2D extent;
-    VkViewport viewport;
-} ScreenSettings;
+    char file[256];
+    VkBuffer vertex_buffer;
+    u32 vertex_count;
+} Mesh;
 
+typedef struct {
+    u32 swapchain_image_count;
+    VkSwapchainKHR swapchain;
+    VkImage *swapchain_images;
+    VkImageView *swapchain_image_views;
+    VkImage depth_image;
+    VkImageView depth_image_view;
+    VramRegion depth_vram_region;
+} ScreenImages;
 
 /* TEXTURE */
 /* MESH */
@@ -87,26 +98,25 @@ typedef struct {
 /* context of render queue */
 struct RenderContext {
     VulkanContext *vulkan_context;
-    /* allocators */
     Arena resource_arena;
-    /* settings */
+    /* screen */
     RenderSettings render_settings;
-    ScreenSettings screen_settings;
-    /* screen objects */
-    u32 swapchain_image_count;
-    VkSwapchainKHR swapchain;
-    VkImage *swapchain_images;
-    VkImageView *swapchain_image_views;
-    VkImage depth_image;
-    VkImageView depth_image_view;
-    VramRegion depth_vram;
+    ScreenImages screen_images;
     /* callback for logs and errors */
     MsgCallback_pfn msg_callback;
     /* user control */
     RenderUpdate_pfn update_callback;
     /* resources */
     VkDescriptorPool descriptor_pool;
+    /* memory */
     Vram images_vram;
+    /* commands */
+    VkCommandPool command_pool;
+};
+
+struct RenderCmd {
+    RenderContext *render_context;
+    VkCommandBuffer command_buffer;
 };
 
 #endif

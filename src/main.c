@@ -63,6 +63,11 @@ i32 main(i32 argc, char **argv) {
         return -3;
     }
 
+    if(!runRenderLoop(render_context, NULL)) {
+        MSG_ERROR(msgCallback, &TRACED_STR("render loop failed"));
+        return -4;
+    }
+
     destroyRenderContext(render_context);
     destroyVulkanContext(vulkan_context);
 

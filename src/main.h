@@ -53,37 +53,36 @@ void destroyVulkanContext(VulkanContext *context);
   ======================================================================*/
 
 typedef struct RenderContext RenderContext;
+typedef struct RenderCmd RenderCmd;
 
 typedef struct {
     u32 res_x;
     u32 res_y;
 } UpdateInfo;
 
-typedef void (*RenderUpdate_pfn) (UpdateInfo *info);
+typedef void (*RenderUpdate_pfn) (UpdateInfo *info, RenderCmd *render_cmd);
 
 typedef struct {
-    const char *vertex_shader; /* set if graphics */
-    const char *fragment_shader; /* set if graphics */
-    const char *compute_shader; /* set if compute */
+    const String vertex_shader; /* set if graphics */
+    const String fragment_shader; /* set if graphics */
+    const String compute_shader; /* set if compute */
 } RenderProgramInfo;
 
 typedef struct {
-    const char *mesh;
+    const String mesh;
 } MeshInfo;
 
 typedef struct {
     VulkanContext *vulkan_context;
     /* render programs */
     RenderProgramInfo *render_programs; /* program ids will be preserved for access */
-    MeshInfo *static_meshes;
     u32 render_program_count;
-    u32 static_mesh_count;
     /* callbacks */
     MsgCallback_pfn msg_callback;
-    RenderUpdate_pfn update_callback;
 } RenderContextInfo;
 
 RenderContext* createRenderContext(Allocate_pfn context_allocate, const RenderContextInfo *info);
 void destroyRenderContext(RenderContext *context);
+b32 runRenderLoop(RenderContext *render_context, RenderUpdate_pfn update_callback);
 
 #endif
