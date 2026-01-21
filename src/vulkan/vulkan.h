@@ -64,7 +64,12 @@ struct VulkanContext {
 b32 allocateVram(VulkanContext *vulkan_context, const VramInfo *info, Vram *vram);
 void freeVram(VulkanContext *vulkan_context, Vram *vram);
 
+
+
 #define MAX_SWAPCHAIN_IMAGES (16)
+#define SHADER_ENTRY_VERTEX "vertexMain"
+#define SHADER_ENTRY_FRAGMENT "fragmentMain"
+#define SHADER_ENTRY_COMPUTE "computeMain"
 
 typedef struct {
     VkColorSpaceKHR color_space;
@@ -115,6 +120,7 @@ typedef struct {
 } ShaderProgram;
 
 typedef struct {
+    VkPipelineLayout pipeline_layout;
     ShaderProgram *shader_programs;
     u32 *resources_usage;
     u32 program_count;

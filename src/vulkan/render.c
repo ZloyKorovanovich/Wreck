@@ -265,16 +265,156 @@ VkShaderModule createShaderModule(VkDevice device, const String *file, MsgCallba
     return module;
 }
 
-b32 createShaderPrograms(
-    const VulkanContext *vulkan_context, u32 program_count, const ShaderProgramInfo *program_infos, MsgCallback_pfn msg_callback, 
-    Arena *resource_arena, Stack *init_stack, Programs *programs
+VkPipeline createGraphicsPipeline(
+    VkDevice device, VkShaderModule vertex_shader, VkShaderModule fragment_shader, VkPipelineLayout pipeline_layout, 
+    const VkFormat *color_formats, u32 color_format_count, VkFormat depth_format
 ) {
+    VkPipelineShaderStageCreateInfo shader_stages[] = {
+        (VkPipelineShaderStageCreateInfo) {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .pName = SHADER_ENTRY_VERTEX,
+            .stage = VK_SHADER_STAGE_VERTEX_BIT,
+            .module = vertex_shader
+        },
+        (VkPipelineShaderStageCreateInfo) {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .pName = SHADER_ENTRY_FRAGMENT,
+            .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .module = fragment_shader
+        }
+    };
+
+    /* these states will be changed on fly */
+    VkPipelineDynamicStateCreateInfo dynamic_state = (VkPipelineDynamicStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = 2,
+        .pDynamicStates = (const VkDynamicState[]){VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR}
+    };
+
+    /* settings for gpu pipeline */
+    VkPipelineVertexInputStateCreateInfo vertex_input_state = (VkPipelineVertexInputStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexAttributeDescriptionCount = 0,
+        .vertexBindingDescriptionCount = 0,
+        .pVertexAttributeDescriptions = NULL,
+        .pVertexBindingDescriptions = NULL
+    };
+    VkPipelineInputAssemblyStateCreateInfo input_assembly_state = (VkPipelineInputAssemblyStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        .primitiveRestartEnable = FALSE
+    };
+    VkPipelineRasterizationStateCreateInfo rasterization_state = (VkPipelineRasterizationStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .depthClampEnable = FALSE,
+        .rasterizerDiscardEnable = FALSE,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .lineWidth = 1.0f,
+        .cullMode = VK_CULL_MODE_NONE,
+        .frontFace = VK_FRONT_FACE_CLOCKWISE,
+        .depthBiasEnable = FALSE,
+        .depthBiasConstantFactor = 0.0f,
+        .depthBiasClamp = 0.0f,
+        .depthBiasSlopeFactor = 0.0f
+    };
+    VkPipelineMultisampleStateCreateInfo multisample_state = (VkPipelineMultisampleStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .sampleShadingEnable = FALSE,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        .minSampleShading = 1.0f,
+        .pSampleMask = NULL,
+        .alphaToCoverageEnable = FALSE,
+        .alphaToOneEnable = FALSE
+    };
+    VkPipelineColorBlendAttachmentState color_blend_attachment_state = (VkPipelineColorBlendAttachmentState) {
+        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        .blendEnable = VK_FALSE,
+        .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstColorBlendFactor = VK_BLEND_FACTOR_ZERO,
+        .colorBlendOp = VK_BLEND_OP_ADD,
+        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+        .alphaBlendOp = VK_BLEND_OP_ADD
+    };
+    VkPipelineColorBlendStateCreateInfo color_blend_state = (VkPipelineColorBlendStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .logicOpEnable = VK_FALSE,
+        .logicOp = VK_LOGIC_OP_COPY,
+        .attachmentCount = 1,
+        .pAttachments = &color_blend_attachment_state,
+        .blendConstants[0] = 0.0f,
+        .blendConstants[1] = 0.0f,
+        .blendConstants[2] = 0.0f,
+        .blendConstants[3] = 0.0f
+    };
+    VkPipelineDepthStencilStateCreateInfo depth_stencil_state = (VkPipelineDepthStencilStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = TRUE,
+        .depthWriteEnable = TRUE,
+        .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL
+    };
+    VkPipelineRenderingCreateInfoKHR rendering_create_info = (VkPipelineRenderingCreateInfoKHR) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR,
+        .colorAttachmentCount = color_format_count,
+        .pColorAttachmentFormats = color_formats,
+        .depthAttachmentFormat = depth_format
+    };
+    /* dynamic, will be replaced */
+    VkPipelineViewportStateCreateInfo viewport_state = (VkPipelineViewportStateCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .scissorCount = 1
+    };
+
+    VkGraphicsPipelineCreateInfo pipeline_info = (VkGraphicsPipelineCreateInfo) {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .basePipelineHandle = NULL,
+        .basePipelineIndex = -1,
+        .stageCount = 2,
+        .pStages = shader_stages,
+        .pVertexInputState = &vertex_input_state,
+        .pInputAssemblyState = &input_assembly_state,
+        .pViewportState = &viewport_state,
+        .pRasterizationState = &rasterization_state,
+        .pMultisampleState = &multisample_state,
+        .pDepthStencilState = &depth_stencil_state,
+        .pColorBlendState = &color_blend_state,
+        .pDynamicState = &dynamic_state,
+        .layout = pipeline_layout,
+        .renderPass = NULL,
+        .pNext = &rendering_create_info
+    };
+
+    VkPipeline pipeline = NULL;
+    if(vkCreateGraphicsPipelines(device, NULL, 1, &pipeline_info, NULL, &pipeline) != VK_SUCCESS) {
+        return NULL;
+    }
+    return pipeline;
+}
+
+/* modifies programs struct of render_context */
+b32 createShaderPrograms(RenderContext *render_context, u32 program_count, const ShaderProgramInfo *program_infos, Stack *init_stack) {
     pushStack(init_stack);
     
     String log_str = {
         .string = (char[256]){0},
         .capacity = 256
     };
+    VulkanContext *vulkan_context = render_context->vulkan_context;
+    /* struct to fill */
+    Programs *programs = &render_context->shader_programs;
+
+    /* PIPELINE LAYOUT */ {
+        VkPipelineLayoutCreateInfo pipeline_layout_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO
+        };
+        if(vkCreatePipelineLayout(vulkan_context->device, &pipeline_layout_info, NULL, &programs->pipeline_layout) != VK_SUCCESS) {
+            MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to create pipeline layout"));
+        }
+    }
+
+    /* following part is a little bit tough, we need to read shader files into a buffer,
+        then compile them to modules and make pipelines from them depending on type of programs assigned */
 
     /* allocate buffer for reading shaders */
     Buffer read_buffer = {
@@ -282,18 +422,18 @@ b32 createShaderPrograms(
         .size = 1024 * 64
     };
     if(!read_buffer.buffer) {
-        MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate read_buffer"));
+        MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate read_buffer"));
         return FALSE;
     }
 
     /* allocate space for shader_programs */
-    programs->shader_programs = allocateArena(resource_arena, sizeof(ShaderProgram) * program_count, 0);
+    programs->shader_programs = allocateArena(&render_context->resource_arena, sizeof(ShaderProgram) * program_count, 0);
     if(!programs->shader_programs) {
-        MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate shader_programs array"));
+        MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate shader_programs array"));
         return FALSE;
     }
     programs->program_count = program_count;
-    
+
     /* create shader programs */
     ShaderProgram *shader_programs = programs->shader_programs;
     for(u32 i = 0; i < program_count; i++) {
@@ -301,18 +441,32 @@ b32 createShaderPrograms(
         if(!IS_EMPTY_STR(program_infos[i].vertex_shader) && !IS_EMPTY_STR(program_infos[i].fragment_shader) && IS_EMPTY_STR(program_infos[i].compute_shader)) {
             shader_programs[i] = (ShaderProgram) {
                 .type = SHADER_PROGRAM_TYPE_GRAPHICS,
-                .vertex_shader = createShaderModule(vulkan_context->device, &program_infos[i].vertex_shader, msg_callback, &read_buffer, init_stack),
-                .fragment_shader = createShaderModule(vulkan_context->device, &program_infos[i].fragment_shader, msg_callback, &read_buffer, init_stack)
+                .vertex_shader = createShaderModule(vulkan_context->device, &program_infos[i].vertex_shader, render_context->msg_callback, &read_buffer, init_stack),
+                .fragment_shader = createShaderModule(vulkan_context->device, &program_infos[i].fragment_shader, render_context->msg_callback, &read_buffer, init_stack)
             };
             /* check if shader module creation was successful */
             if(shader_programs[i].vertex_shader == NULL) {
                 stringPattern(&TRACED_STR("invalid vertex shader: \"%s\""), (const void *[]){ &program_infos[i].vertex_shader}, &log_str);
-                MSG_ERROR(msg_callback, &log_str);
+                MSG_ERROR(render_context->msg_callback, &log_str);
                 return FALSE;
             }
             if(shader_programs[i].fragment_shader == NULL) {
                 stringPattern(&TRACED_STR("invalid fragment shader: \"%s\""), (const void *[]){ &program_infos[i].fragment_shader}, &log_str);
-                MSG_ERROR(msg_callback, &log_str);
+                MSG_ERROR(render_context->msg_callback, &log_str);
+                return FALSE;
+            }
+
+            /* create pipeline */
+            shader_programs[i].pipeline = createGraphicsPipeline(
+                vulkan_context->device, shader_programs[i].vertex_shader, shader_programs[i].fragment_shader, programs->pipeline_layout,
+                &render_context->render_settings.color_format, 1, render_context->render_settings.depth_format
+            );
+            if(!shader_programs[i].pipeline) {
+                stringPattern(
+                    &TRACED_STR("failed to create graphics pipeline: { vertex: \"%s\" fragment: \"%s\" compute: \"%s\" }"), 
+                    (const void *[]){ &program_infos[i].vertex_shader, &program_infos[i].fragment_shader, &program_infos[i].compute_shader },
+                    &log_str
+                );
                 return FALSE;
             }
             continue;
@@ -321,12 +475,12 @@ b32 createShaderPrograms(
         if(!IS_EMPTY_STR(program_infos[i].compute_shader) && IS_EMPTY_STR(program_infos[i].vertex_shader) && IS_EMPTY_STR(program_infos[i].fragment_shader)) {
             shader_programs[i] = (ShaderProgram) {
                 .type = SHADER_PROGRAM_TYPE_COMPUTE,
-                .compute_shader = createShaderModule(vulkan_context->device, &program_infos[i].compute_shader, msg_callback, &read_buffer, init_stack)
+                .compute_shader = createShaderModule(vulkan_context->device, &program_infos[i].compute_shader, render_context->msg_callback, &read_buffer, init_stack)
             };
             /* check if shader module creation was successful */
             if(shader_programs[i].compute_shader == NULL) {
                 stringPattern(&TRACED_STR("invalid compute shader: \"%s\""), (const void *[]){ &program_infos[i].compute_shader}, &log_str);
-                MSG_ERROR(msg_callback, &log_str);
+                MSG_ERROR(render_context->msg_callback, &log_str);
                 return FALSE;
             }
             continue;
@@ -337,7 +491,7 @@ b32 createShaderPrograms(
             (const void *[]){ &program_infos[i].vertex_shader, &program_infos[i].fragment_shader, &program_infos[i].compute_shader },
             &log_str
         );
-        MSG_ERROR(msg_callback, &log_str);
+        MSG_ERROR(render_context->msg_callback, &log_str);
         return FALSE;
     }
 
@@ -495,10 +649,7 @@ RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderCo
     }
 
     if(info->render_program_count != 0) {
-        if(!createShaderPrograms(
-            vulkan_context, info->render_program_count, info->render_programs, context->msg_callback, 
-            &context->resource_arena, &init_stack, &context->shader_programs
-        )) {
+        if(!createShaderPrograms(context, info->render_program_count, info->render_programs, &init_stack)) {
             MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create shader shader_programs"));
             return NULL;
         }
@@ -537,7 +688,9 @@ void destroyRenderContext(RenderContext *context) {
             if(shader_programs[i].type == SHADER_PROGRAM_TYPE_COMPUTE) {
                 vkDestroyShaderModule(vulkan_context->device, shader_programs[i].compute_shader, NULL);
             }
+            vkDestroyPipeline(vulkan_context->device, shader_programs[i].pipeline, NULL);
         }
+        vkDestroyPipelineLayout(vulkan_context->device, context->shader_programs.pipeline_layout, NULL);
     }
 
     /* SCREEN IMAGES */ {
