@@ -66,7 +66,7 @@ typedef struct {
     const String vertex_shader; /* set if graphics */
     const String fragment_shader; /* set if graphics */
     const String compute_shader; /* set if compute */
-} RenderProgramInfo;
+} ShaderProgramInfo;
 
 typedef struct {
     const String mesh;
@@ -74,8 +74,8 @@ typedef struct {
 
 typedef struct {
     VulkanContext *vulkan_context;
-    /* render programs */
-    RenderProgramInfo *render_programs; /* program ids will be preserved for access */
+    /* render shader_programs */
+    const ShaderProgramInfo *render_programs; /* program ids will be preserved for access */
     u32 render_program_count;
     /* callbacks */
     MsgCallback_pfn msg_callback;

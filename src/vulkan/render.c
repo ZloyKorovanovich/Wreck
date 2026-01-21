@@ -1,5 +1,7 @@
 #include "vulkan.h"
 
+
+
 b32 configureRenderSettings(const VulkanContext *vulkan_context, Stack* stack, MsgCallback_pfn msg_callback, RenderSettings *settings) {
     pushStack(stack);
     
@@ -228,6 +230,333 @@ b32 createScreenTextures(
 }
 
 
+VkShaderModule createShaderModule(VkDevice device, const String *file, MsgCallback_pfn msg_callback, Buffer *read_buffer, Stack *stack) {
+    u64 file_size = fileToBuffer(file, read_buffer);
+    /* if failed */
+    if(file_size == 0) {
+        MSG_ERROR(msg_callback, &TRACED_STR("invalid shader file"));
+        return NULL;
+    }
+    /* if file size is bigger than buffer reallocate buffer */
+    if(file_size > read_buffer->size) {
+        if(!allocateStack(stack, file_size - read_buffer->size, 0)) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to reallocate read_buffer for shaders"));
+            return NULL;
+        }
+        read_buffer->size = file_size;
+    }
+    /* second read attempt */
+    if(fileToBuffer(file, read_buffer) != file_size) {
+        MSG_ERROR(msg_callback, &TRACED_STR("failed to read shader file after reallocation"));
+        return NULL;
+    }
+
+    /* create vulkan shader module, compile shader */
+    VkShaderModule module = NULL;
+    VkShaderModuleCreateInfo module_info = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .pCode = read_buffer->buffer,
+        .codeSize = file_size
+    };
+    if(vkCreateShaderModule(device, &module_info, NULL, &module) != VK_SUCCESS) {
+        MSG_ERROR(msg_callback, &TRACED_STR("failed to create shader module"));
+        return NULL;
+    }
+    return module;
+}
+
+b32 createShaderPrograms(
+    const VulkanContext *vulkan_context, u32 program_count, const ShaderProgramInfo *program_infos, MsgCallback_pfn msg_callback, 
+    Arena *resource_arena, Stack *init_stack, Programs *programs
+) {
+    pushStack(init_stack);
+    
+    String log_str = {
+        .string = (char[256]){0},
+        .capacity = 256
+    };
+
+    /* allocate buffer for reading shaders */
+    Buffer read_buffer = {
+        .buffer = allocateStack(init_stack, 1024 * 64, 16),
+        .size = 1024 * 64
+    };
+    if(!read_buffer.buffer) {
+        MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate read_buffer"));
+        return FALSE;
+    }
+
+    /* allocate space for shader_programs */
+    programs->shader_programs = allocateArena(resource_arena, sizeof(ShaderProgram) * program_count, 0);
+    if(!programs->shader_programs) {
+        MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate shader_programs array"));
+        return FALSE;
+    }
+    programs->program_count = program_count;
+    
+    /* create shader programs */
+    ShaderProgram *shader_programs = programs->shader_programs;
+    for(u32 i = 0; i < program_count; i++) {
+        /* if graphics */
+        if(!IS_EMPTY_STR(program_infos[i].vertex_shader) && !IS_EMPTY_STR(program_infos[i].fragment_shader) && IS_EMPTY_STR(program_infos[i].compute_shader)) {
+            shader_programs[i] = (ShaderProgram) {
+                .type = SHADER_PROGRAM_TYPE_GRAPHICS,
+                .vertex_shader = createShaderModule(vulkan_context->device, &program_infos[i].vertex_shader, msg_callback, &read_buffer, init_stack),
+                .fragment_shader = createShaderModule(vulkan_context->device, &program_infos[i].fragment_shader, msg_callback, &read_buffer, init_stack)
+            };
+            /* check if shader module creation was successful */
+            if(shader_programs[i].vertex_shader == NULL) {
+                stringPattern(&TRACED_STR("invalid vertex shader: \"%s\""), (const void *[]){ &program_infos[i].vertex_shader}, &log_str);
+                MSG_ERROR(msg_callback, &log_str);
+                return FALSE;
+            }
+            if(shader_programs[i].fragment_shader == NULL) {
+                stringPattern(&TRACED_STR("invalid fragment shader: \"%s\""), (const void *[]){ &program_infos[i].fragment_shader}, &log_str);
+                MSG_ERROR(msg_callback, &log_str);
+                return FALSE;
+            }
+            continue;
+        }
+        /* if compute */
+        if(!IS_EMPTY_STR(program_infos[i].compute_shader) && IS_EMPTY_STR(program_infos[i].vertex_shader) && IS_EMPTY_STR(program_infos[i].fragment_shader)) {
+            shader_programs[i] = (ShaderProgram) {
+                .type = SHADER_PROGRAM_TYPE_COMPUTE,
+                .compute_shader = createShaderModule(vulkan_context->device, &program_infos[i].compute_shader, msg_callback, &read_buffer, init_stack)
+            };
+            /* check if shader module creation was successful */
+            if(shader_programs[i].compute_shader == NULL) {
+                stringPattern(&TRACED_STR("invalid compute shader: \"%s\""), (const void *[]){ &program_infos[i].compute_shader}, &log_str);
+                MSG_ERROR(msg_callback, &log_str);
+                return FALSE;
+            }
+            continue;
+        }
+        /* invalid combination of shaders */
+        stringPattern(
+            &TRACED_STR("invalid shader combination { vertex: \"%s\" fragment: \"%s\" compute: \"%s\" }"), 
+            (const void *[]){ &program_infos[i].vertex_shader, &program_infos[i].fragment_shader, &program_infos[i].compute_shader },
+            &log_str
+        );
+        MSG_ERROR(msg_callback, &log_str);
+        return FALSE;
+    }
+
+    popStack(init_stack);
+    return TRUE;
+}
+
+
+RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderContextInfo *info) {
+    /* VALIDATION */ {
+        if(!info) {
+            return NULL;
+        }
+        if(!context_allocate) {
+            MSG_ERROR(info->msg_callback, &TRACED_STR("invalid allocator procedure"));
+            return NULL;
+        }
+        if(!info->vulkan_context) {
+            MSG_ERROR(info->msg_callback, &TRACED_STR("invalid vulkan context"));
+            return NULL;
+        }
+    }
+
+    /* 
+    String msg_string = {
+        .string = (char[256]){0},
+        .capacity = 256 
+    }; */
+
+    RenderContext *context = context_allocate(sizeof(RenderContext), 16);
+    if(!context) {
+        MSG_ERROR(info->msg_callback, &TRACED_STR("failed to allocate render context"));
+        return NULL;
+    }
+
+    *context = (RenderContext) {
+        .vulkan_context = info->vulkan_context,
+        .msg_callback = info->msg_callback
+    };
+
+    VulkanContext *vulkan_context = info->vulkan_context;
+
+    /* allocate arena for resources, this arena has same lifetime as render context that is created */
+    if(!createArena(&context->resource_arena, 1024 * 1024 * 256, 1024 * 64)) {
+        MSG_ERROR(context->msg_callback, &TRACED_STR("failed to allocate resource arena"));
+        return NULL;
+    }
+
+    /* create stack allocator, which is used during init (this function scope) */
+    Stack init_stack = (Stack){0};
+    if(!createStack(&init_stack, 1024 * 1024 * 256, 1024 * 64)) {
+        MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create render init_stack"));
+        return NULL;
+    }
+
+    /* configure render formats for depth color etc */
+    if(!configureRenderSettings(context->vulkan_context, &init_stack, context->msg_callback, &context->render_settings)) {
+        MSG_ERROR(context->msg_callback, &TRACED_STR("failed to confiure render settings"));
+        return NULL;
+    }
+
+    /* IMAGES MEMORY LAYOUT */ {
+        VramInfo images_alloc_info = {.memory_type_bits = U32_MAX};
+        
+        if(vulkan_context->device_model == DEVICE_MODEL_DESCRETE) {
+            images_alloc_info.mandatory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+            images_alloc_info.restricted_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+        }
+        if(vulkan_context->device_model == DEVICE_MODEL_INTEGRATED) {
+            images_alloc_info.mandatory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        }
+
+        i32 max_screen_res_x = 0;
+        i32 max_screen_res_y = 0;
+
+        /* DEPTH IMAGE */ {
+            /* get monitors and find their max size */
+            i32 monitor_count = 0;
+            GLFWmonitor **monitors = glfwGetMonitors(&monitor_count);
+            for(i32 i = 0; i < monitor_count; i++) {
+                const GLFWvidmode *video_mode = glfwGetVideoMode(monitors[i]);
+                max_screen_res_x = MAX(max_screen_res_x, video_mode->width);
+                max_screen_res_y = MAX(max_screen_res_y, video_mode->height);
+            }
+
+            /* create depth image with max resolution */
+            VkImage depth_prototype = NULL;
+            VkImageCreateInfo depth_prototype_info = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                .imageType = VK_IMAGE_TYPE_2D,
+                .extent = (VkExtent3D){
+                    .width = max_screen_res_x, 
+                    .height = max_screen_res_y, 
+                    .depth = 1
+                },
+                .format = context->render_settings.depth_format,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .samples = 1,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+            };
+            if(vkCreateImage(vulkan_context->device, &depth_prototype_info, NULL, &depth_prototype) != VK_SUCCESS) {
+                MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create depth image prototype for max resolution"));
+                return NULL;
+            }
+
+            VkMemoryRequirements depth_memory_requirements = (VkMemoryRequirements){0};
+            vkGetImageMemoryRequirements(vulkan_context->device, depth_prototype, &depth_memory_requirements);
+            /* destroy prototype image, because its not real */
+            vkDestroyImage(vulkan_context->device, depth_prototype, NULL);
+
+            u64 start_offset = ALIGN(images_alloc_info.size, depth_memory_requirements.alignment);
+
+            /* fill memory descriptor struct */
+            context->screen_images.depth_vram_region = (VramRegion) {
+                .offset = start_offset,
+                .size = depth_memory_requirements.size
+            };
+
+            images_alloc_info.size = start_offset + depth_memory_requirements.size;
+            images_alloc_info.memory_type_bits &= depth_memory_requirements.memoryTypeBits;
+        }
+        
+        if(!images_alloc_info.memory_type_bits) {
+            MSG_ERROR(context->msg_callback, &TRACED_STR("incorrect resource groupping, memory type bits became 0"));
+            return NULL;
+        }
+
+        /* CALL TO ALLOCATOR */ {
+            if(!allocateVram(vulkan_context, &images_alloc_info, &context->images_vram)) {
+                MSG_ERROR(context->msg_callback, &TRACED_STR("failed to allocate images vram"));
+                return NULL;
+            }
+        }
+    }
+
+    /* SCREEN TEXTURES */ {
+        /* allocate space on resource arena for VkImages and VkImageViews of swapchain, they are handles of resources (pointers) */
+        void *swapchain_image_buffer = allocateArena(&context->resource_arena, MAX_SWAPCHAIN_IMAGES * 2 * sizeof(void *), 8);
+        if(!swapchain_image_buffer) {
+            MSG_ERROR(context->msg_callback, &TRACED_STR("failed to allocate swapchain_image_buffer"));
+            return NULL;
+        }
+        /* offset pointers, beacuse we allocated space for 2 arrays at once */
+        context->screen_images.swapchain_images = (VkImage *)swapchain_image_buffer;
+        context->screen_images.swapchain_image_views = (VkImageView *)((void *)swapchain_image_buffer + MAX_SWAPCHAIN_IMAGES);
+
+        /* create screen textures */
+        if(!createScreenTextures(vulkan_context, &context->images_vram, context->msg_callback, &context->render_settings, &context->screen_images)) {
+            MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create screen textures"));
+            return NULL;
+        }
+    }
+
+    if(info->render_program_count != 0) {
+        if(!createShaderPrograms(
+            vulkan_context, info->render_program_count, info->render_programs, context->msg_callback, 
+            &context->resource_arena, &init_stack, &context->shader_programs
+        )) {
+            MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create shader shader_programs"));
+            return NULL;
+        }
+    }
+
+    /* COMMAND POOL */ {
+        const VkCommandPoolCreateInfo command_pool_info = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            .queueFamilyIndex = vulkan_context->render_queue_id
+        };
+        if(vkCreateCommandPool(vulkan_context->device, &command_pool_info, NULL, &context->command_pool) != VK_SUCCESS) {
+            MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create render command pool"));
+            return NULL;
+        }
+    }
+
+    return context;
+}
+
+void destroyRenderContext(RenderContext *context) {
+    VulkanContext* vulkan_context = context->vulkan_context;
+
+    /* COMMAND POOL */ {
+        vkDestroyCommandPool(vulkan_context->device, context->command_pool, NULL);
+    }
+
+    /* SHADER PROGRAMS */ {
+        const u32 program_count = context->shader_programs.program_count;
+        ShaderProgram *shader_programs = context->shader_programs.shader_programs;
+        for(u32 i = 0; i < program_count; i++) {
+            if(shader_programs[i].type == SHADER_PROGRAM_TYPE_GRAPHICS) {
+                vkDestroyShaderModule(vulkan_context->device, shader_programs[i].vertex_shader, NULL);
+                vkDestroyShaderModule(vulkan_context->device, shader_programs[i].fragment_shader, NULL);
+            }
+            if(shader_programs[i].type == SHADER_PROGRAM_TYPE_COMPUTE) {
+                vkDestroyShaderModule(vulkan_context->device, shader_programs[i].compute_shader, NULL);
+            }
+        }
+    }
+
+    /* SCREEN IMAGES */ {
+        for(u32 i = 0; i < context->screen_images.swapchain_image_count; i++) {
+            vkDestroyImageView(vulkan_context->device, context->screen_images.swapchain_image_views[i], NULL);
+        }
+        vkDestroySwapchainKHR(vulkan_context->device, context->screen_images.swapchain, NULL);
+        vkDestroyImageView(vulkan_context->device, context->screen_images.depth_image_view, NULL);
+        vkDestroyImage(vulkan_context->device, context->screen_images.depth_image, NULL);
+    }
+
+    /* FREE MEMORY */ {
+        freeVram(vulkan_context, &context->images_vram);
+        freeArena(&context->resource_arena);
+    }
+
+    *context = (RenderContext){0};
+}
+
 b32 runRenderLoop(RenderContext *render_context, RenderUpdate_pfn update_callback) {
     typedef struct {
         VkSemaphore image_available_semaphore;
@@ -419,190 +748,3 @@ b32 runRenderLoop(RenderContext *render_context, RenderUpdate_pfn update_callbac
     return TRUE;
 }
 
-
-RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderContextInfo *info) {
-    /* VALIDATION */ {
-        if(!info) {
-            return NULL;
-        }
-        if(!context_allocate) {
-            MSG_ERROR(info->msg_callback, &TRACED_STR("invalid allocator procedure"));
-            return NULL;
-        }
-        if(!info->vulkan_context) {
-            MSG_ERROR(info->msg_callback, &TRACED_STR("invalid vulkan context"));
-            return NULL;
-        }
-    }
-
-    /* 
-    String msg_string = {
-        .string = (char[256]){0},
-        .capacity = 256 
-    }; */
-
-    RenderContext *context = context_allocate(sizeof(RenderContext), 16);
-    if(!context) {
-        MSG_ERROR(info->msg_callback, &TRACED_STR("failed to allocate render context"));
-        return NULL;
-    }
-
-    *context = (RenderContext) {
-        .vulkan_context = info->vulkan_context,
-        .msg_callback = info->msg_callback
-    };
-
-    VulkanContext *vulkan_context = info->vulkan_context;
-
-    /* allocate arena for resources, this arena has same lifetime as render context that is created */
-    if(!createArena(&context->resource_arena, 1024 * 1024 * 256, 1024 * 64)) {
-        MSG_ERROR(context->msg_callback, &TRACED_STR("failed to allocate resource arena"));
-        return NULL;
-    }
-
-    /* create stack allocator, which is used during init (this function scope) */
-    Stack init_stack = (Stack){0};
-    if(!createStack(&init_stack, 1024 * 1024 * 256, 1024 * 64)) {
-        MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create render init_stack"));
-        return NULL;
-    }
-
-    /* configure render formats for depth color etc */
-    if(!configureRenderSettings(context->vulkan_context, &init_stack, context->msg_callback, &context->render_settings)) {
-        MSG_ERROR(context->msg_callback, &TRACED_STR("failed to confiure render settings"));
-        return NULL;
-    }
-
-    /* IMAGES MEMORY LAYOUT */ {
-        VramInfo images_alloc_info = {.memory_type_bits = U32_MAX};
-        
-        if(vulkan_context->device_model == DEVICE_MODEL_DESCRETE) {
-            images_alloc_info.mandatory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-            images_alloc_info.restricted_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-        }
-        if(vulkan_context->device_model == DEVICE_MODEL_INTEGRATED) {
-            images_alloc_info.mandatory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-        }
-
-        i32 max_screen_res_x = 0;
-        i32 max_screen_res_y = 0;
-
-        /* DEPTH IMAGE */ {
-            /* get monitors and find their max size */
-            i32 monitor_count = 0;
-            GLFWmonitor **monitors = glfwGetMonitors(&monitor_count);
-            for(i32 i = 0; i < monitor_count; i++) {
-                const GLFWvidmode *video_mode = glfwGetVideoMode(monitors[i]);
-                max_screen_res_x = MAX(max_screen_res_x, video_mode->width);
-                max_screen_res_y = MAX(max_screen_res_y, video_mode->height);
-            }
-
-            /* create depth image with max resolution */
-            VkImage depth_prototype = NULL;
-            VkImageCreateInfo depth_prototype_info = {
-                .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-                .imageType = VK_IMAGE_TYPE_2D,
-                .extent = (VkExtent3D){
-                    .width = max_screen_res_x, 
-                    .height = max_screen_res_y, 
-                    .depth = 1
-                },
-                .format = context->render_settings.depth_format,
-                .tiling = VK_IMAGE_TILING_OPTIMAL,
-                .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                .mipLevels = 1,
-                .arrayLayers = 1,
-                .samples = 1,
-                .sharingMode = VK_SHARING_MODE_EXCLUSIVE
-            };
-            if(vkCreateImage(vulkan_context->device, &depth_prototype_info, NULL, &depth_prototype) != VK_SUCCESS) {
-                MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create depth image prototype for max resolution"));
-                return NULL;
-            }
-
-            VkMemoryRequirements depth_memory_requirements = (VkMemoryRequirements){0};
-            vkGetImageMemoryRequirements(vulkan_context->device, depth_prototype, &depth_memory_requirements);
-            /* destroy prototype image, because its not real */
-            vkDestroyImage(vulkan_context->device, depth_prototype, NULL);
-
-            u64 start_offset = ALIGN(images_alloc_info.size, depth_memory_requirements.alignment);
-
-            /* fill memory descriptor struct */
-            context->screen_images.depth_vram_region = (VramRegion) {
-                .offset = start_offset,
-                .size = depth_memory_requirements.size
-            };
-
-            images_alloc_info.size = start_offset + depth_memory_requirements.size;
-            images_alloc_info.memory_type_bits &= depth_memory_requirements.memoryTypeBits;
-        }
-        
-        if(!images_alloc_info.memory_type_bits) {
-            MSG_ERROR(context->msg_callback, &TRACED_STR("incorrect resource groupping, memory type bits became 0"));
-            return NULL;
-        }
-
-        /* CALL TO ALLOCATOR */ {
-            if(!allocateVram(vulkan_context, &images_alloc_info, &context->images_vram)) {
-                MSG_ERROR(context->msg_callback, &TRACED_STR("failed to allocate images vram"));
-                return NULL;
-            }
-        }
-    }
-
-    /* SCREEN TEXTURES */ {
-        /* allocate space on resource arena for VkImages and VkImageViews of swapchain, they are handles of resources (pointers) */
-        void *swapchain_image_buffer = allocateArena(&context->resource_arena, MAX_SWAPCHAIN_IMAGES * 2 * sizeof(void *), 8);
-        if(!swapchain_image_buffer) {
-            MSG_ERROR(context->msg_callback, &TRACED_STR("failed to allocate swapchain_image_buffer"));
-            return NULL;
-        }
-        /* offset pointers, beacuse we allocated space for 2 arrays at once */
-        context->screen_images.swapchain_images = (VkImage *)swapchain_image_buffer;
-        context->screen_images.swapchain_image_views = (VkImageView *)((void *)swapchain_image_buffer + MAX_SWAPCHAIN_IMAGES);
-
-        /* create screen textures */
-        if(!createScreenTextures(vulkan_context, &context->images_vram, context->msg_callback, &context->render_settings, &context->screen_images)) {
-            MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create screen textures"));
-            return NULL;
-        }
-    }
-
-    /* COMMAND POOL */ {
-        const VkCommandPoolCreateInfo command_pool_info = {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-            .queueFamilyIndex = vulkan_context->render_queue_id
-        };
-        if(vkCreateCommandPool(vulkan_context->device, &command_pool_info, NULL, &context->command_pool) != VK_SUCCESS) {
-            MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create render command pool"));
-            return NULL;
-        }
-    }
-
-    return context;
-}
-
-void destroyRenderContext(RenderContext *context) {
-    VulkanContext* vulkan_context = context->vulkan_context;
-
-    /* COMMAND POOL */ {
-        vkDestroyCommandPool(vulkan_context->device, context->command_pool, NULL);
-    }
-
-    /* SCREEN IMAGES */ {
-        for(u32 i = 0; i < context->screen_images.swapchain_image_count; i++) {
-            vkDestroyImageView(vulkan_context->device, context->screen_images.swapchain_image_views[i], NULL);
-        }
-        vkDestroySwapchainKHR(vulkan_context->device, context->screen_images.swapchain, NULL);
-        vkDestroyImageView(vulkan_context->device, context->screen_images.depth_image_view, NULL);
-        vkDestroyImage(vulkan_context->device, context->screen_images.depth_image, NULL);
-    }
-
-    /* FREE MEMORY */ {
-        freeVram(vulkan_context, &context->images_vram);
-        freeArena(&context->resource_arena);
-    }
-
-    *context = (RenderContext){0};
-}

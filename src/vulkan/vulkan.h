@@ -90,10 +90,35 @@ typedef struct {
     VramRegion depth_vram_region;
 } ScreenImages;
 
-/* TEXTURE */
-/* MESH */
-/* DYNAMIC MESH */
-/* STORAGE BUFFER */
+/* render prorgams */
+typedef enum {
+    SHADER_PROGRAM_TYPE_NONE = 0,
+    SHADER_PROGRAM_TYPE_GRAPHICS = 1,
+    SHADER_PROGRAM_TYPE_COMPUTE = 2
+} ShaderProgramType;
+
+typedef struct {
+    ShaderProgramType type;
+    VkPipeline pipeline;
+    u32 resources_begin;
+    u32 resources_end;
+    /* different part */
+    union {
+        struct {
+            VkShaderModule vertex_shader;
+            VkShaderModule fragment_shader;
+        };
+        struct {
+            VkShaderModule compute_shader;
+        };
+    };
+} ShaderProgram;
+
+typedef struct {
+    ShaderProgram *shader_programs;
+    u32 *resources_usage;
+    u32 program_count;
+} Programs;
 
 /* context of render queue */
 struct RenderContext {
@@ -102,10 +127,10 @@ struct RenderContext {
     /* screen */
     RenderSettings render_settings;
     ScreenImages screen_images;
+    /* shader shader_programs */
+    Programs shader_programs;
     /* callback for logs and errors */
     MsgCallback_pfn msg_callback;
-    /* user control */
-    RenderUpdate_pfn update_callback;
     /* resources */
     VkDescriptorPool descriptor_pool;
     /* memory */

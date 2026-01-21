@@ -34,6 +34,13 @@ void *allocateContext(u64 size, u64 aligment) {
     return allocateArena(&s_context_arena, size, aligment);
 }
 
+const ShaderProgramInfo c_shader_programs[] = {
+    (ShaderProgramInfo){
+        .vertex_shader = CONST_STRING("out/data/triangle_v.spv"),
+        .fragment_shader = CONST_STRING("out/data/triangle_f.spv")
+    }
+};
+
 i32 main(i32 argc, char **argv) {
     if(!createArena(&s_context_arena, 1024 * 1024 * 64, 1024 * 1024 * 4)) {
         MSG_ERROR(msgCallback, &TRACED_STR("failed to create s_context_arena allocator"));
@@ -55,6 +62,8 @@ i32 main(i32 argc, char **argv) {
 
     RenderContextInfo render_info = {
         .vulkan_context = vulkan_context,
+        .render_programs = c_shader_programs,
+        .render_program_count = ARRAY_SIZE(c_shader_programs),
         .msg_callback = &msgCallback
     };
     RenderContext *render_context = createRenderContext(&allocateContext, &render_info);
