@@ -145,9 +145,20 @@ struct RenderContext {
     VkCommandPool command_pool;
 };
 
+#define MAX_COLOR_ATTACHMENTS (8)
+
 struct RenderCmd {
     RenderContext *render_context;
     VkCommandBuffer command_buffer;
+    ShaderProgram *last_shader_program;
+
+    VkRenderingAttachmentInfoKHR color_attachments[MAX_COLOR_ATTACHMENTS];
+    VkRenderingAttachmentInfoKHR depth_attachment;
+    u32 color_attachment_count;
+    b32 use_depth_atachment;
+
+    VkImageView screen_color_view;
+    VkImageView screen_depth_view;
 };
 
 #endif

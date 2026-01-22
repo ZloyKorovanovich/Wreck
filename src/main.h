@@ -85,4 +85,11 @@ RenderContext* createRenderContext(Allocate_pfn context_allocate, const RenderCo
 void destroyRenderContext(RenderContext *context);
 b32 runRenderLoop(RenderContext *render_context, RenderUpdate_pfn update_callback);
 
+#define RENDER_ATTACHMENT_SCREEN_COLOR_ID (U32_MAX - 1)
+#define RENDER_ATTACHMENT_SCREEN_DEPTH_ID (U32_MAX - 2)
+
+void beginRendering(RenderCmd *cmd, u32 color_count, u32 *color_ids, u32 depth_id);
+void endRendering(RenderCmd *cmd);
+void drawProcedural(RenderCmd *cmd, u32 program_id, u32 vertex_count, u32 instance_count);
+
 #endif
