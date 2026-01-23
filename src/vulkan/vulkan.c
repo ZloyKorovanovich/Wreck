@@ -594,6 +594,7 @@ VulkanContext *createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
 
         /* set queue indices and physical device  */
         context->physical_device = best_device_info->device;
+        context->device_model = best_device_info->device_model;
         context->memory_properties = best_device_info->memory_properties;
         context->render_queue_id = best_device_info->render_queue_id;
         context->compute_queue_id = best_device_info->compute_queue_id;
