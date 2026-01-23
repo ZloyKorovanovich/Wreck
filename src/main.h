@@ -69,14 +69,16 @@ typedef struct {
 } ShaderProgramInfo;
 
 typedef struct {
-    const String mesh;
+    const String file;
 } MeshInfo;
 
 typedef struct {
     VulkanContext *vulkan_context;
-    /* render shader_programs */
-    const ShaderProgramInfo *render_programs; /* program ids will be preserved for access */
-    u32 render_program_count;
+    /* shader_programs */
+    const ShaderProgramInfo *programs; /* program ids will be preserved for access */
+    const MeshInfo *meshes;
+    u32 program_count;
+    u32 mesh_count;
     /* callbacks */
     MsgCallback_pfn msg_callback;
 } RenderContextInfo;

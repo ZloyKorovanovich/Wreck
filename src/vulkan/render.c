@@ -75,7 +75,7 @@ b32 configureRenderSettings(const VulkanContext *vulkan_context, Stack* stack, M
 }
 
 b32 createScreenTextures(
-    const VulkanContext *vulkan_context, const Vram *images_vram, MsgCallback_pfn msg_callback, 
+    const VulkanContext *vulkan_context, const Vram *images_device_vram, MsgCallback_pfn msg_callback, 
     RenderSettings *render_settings, ScreenImages *screen_images
 ) {
     /* requrest surface capabilities */
@@ -200,7 +200,7 @@ b32 createScreenTextures(
             return FALSE;
         }
         /* bind memory to depth image before creating view */
-        if(vkBindImageMemory(vulkan_context->device, screen_images->depth_image, images_vram->memory, screen_images->depth_vram_region.offset) != VK_SUCCESS) {
+        if(vkBindImageMemory(vulkan_context->device, screen_images->depth_image, images_device_vram->memory, screen_images->depth_vram_region.offset) != VK_SUCCESS) {
             MSG_ERROR(msg_callback, &TRACED_STR("failed to bind depth image memory"));
             return FALSE;
         }
@@ -228,7 +228,7 @@ b32 createScreenTextures(
     return TRUE;
 }
 
-
+/* read buffer should end on the end of stack for easy reallocation */
 VkShaderModule createShaderModule(VkDevice device, const String *file, MsgCallback_pfn msg_callback, Buffer *read_buffer, Stack *stack) {
     u64 file_size = fileToBuffer(file, read_buffer);
     /* if failed */
@@ -238,16 +238,17 @@ VkShaderModule createShaderModule(VkDevice device, const String *file, MsgCallba
     }
     /* if file size is bigger than buffer reallocate buffer */
     if(file_size > read_buffer->size) {
-        if(!allocateStack(stack, file_size - read_buffer->size, 0)) {
+        /* allocate with aligment 1 to avoid issues with holes in buffer */
+        if(!allocateStack(stack, file_size - read_buffer->size, 1)) {
             MSG_ERROR(msg_callback, &TRACED_STR("failed to reallocate read_buffer for shaders"));
             return NULL;
         }
         read_buffer->size = file_size;
-    }
-    /* second read attempt */
-    if(fileToBuffer(file, read_buffer) != file_size) {
-        MSG_ERROR(msg_callback, &TRACED_STR("failed to read shader file after reallocation"));
-        return NULL;
+        /* second read attempt */
+        if(fileToBuffer(file, read_buffer) != file_size) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to read shader file after reallocation"));
+            return NULL;
+        }
     }
 
     /* create vulkan shader module, compile shader */
@@ -466,6 +467,7 @@ b32 createShaderPrograms(RenderContext *render_context, u32 program_count, const
                     (const void *[]){ &program_infos[i].vertex_shader, &program_infos[i].fragment_shader, &program_infos[i].compute_shader },
                     &log_str
                 );
+                MSG_ERROR(render_context->msg_callback, &log_str);
                 return FALSE;
             }
             continue;
@@ -496,6 +498,238 @@ b32 createShaderPrograms(RenderContext *render_context, u32 program_count, const
 
     popStack(init_stack);
     return TRUE;
+}
+
+
+/* read buffer should end on the end of stack for easy reallocation */
+b32 createRawMesh(const String *file, MsgCallback_pfn msg_callback, Buffer *read_buffer, Stack *stack, Arena *mesh_arena, RawMesh *mesh) {
+    /* try to read file to buffer */
+    u64 file_size = fileToBuffer(file, read_buffer);
+    /* if read unccuccessful */
+    if(file_size == 0) {
+        MSG_ERROR(msg_callback, &TRACED_STR("failed to read mesh file"));
+        return FALSE;
+    }
+    /* if need to reallocate buffer for bigger file */
+    if(file_size > read_buffer->size) {
+        /* allocate more memory, buffer ends on the end of stack */
+        if(!allocateStack(stack, file_size - read_buffer->size, 1)) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to reallocate read buffer for larger mesh file"));
+            return FALSE;
+        }
+        /* read file to buffer 2 attempt */
+        if(fileToBuffer(file, read_buffer) != file_size) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to read mesh file to buffer after reallocation"));
+            return FALSE;
+        }
+    }
+
+    u32 file_version = *((u32 *)read_buffer->buffer);
+    /* first version of mesh */
+    if(file_version == 1) {
+        /* vertex v1 */
+        typedef struct {
+            f32 position[3];
+        } VertexV1;
+        typedef u16 IndexV1;
+
+        /* get vertex and index count */
+        u32 vertex_count = *(u32 *)((u8 *)read_buffer->buffer + 4);
+        u32 index_count = *(u32 *)((u8 *)read_buffer->buffer + 8);
+        if(vertex_count == 0 || index_count == 0) {
+            MSG_ERROR(msg_callback, &TRACED_STR("mesh file contain 0 length arrays"));
+            return FALSE;
+        }
+
+        /* vertex and index arrays in buffer */
+        VertexV1 *vertices_v1 = (VertexV1 *)((u8 *)read_buffer->buffer + 16);
+        IndexV1 *indices_v1 = (IndexV1 *)((u8 *)read_buffer->buffer + 16 + sizeof(VertexV1) * vertex_count);
+
+        /* allocate raw mesh arrays */
+        *mesh = (RawMesh) {
+            .vertices = allocateArena(mesh_arena, sizeof(Vertex) * vertex_count, 16),
+            .indices = allocateArena(mesh_arena, sizeof(u16) * index_count, 16),
+            .vertex_count = vertex_count,
+            .index_count = index_count
+        };
+        if(!mesh->vertices) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate raw mesh vertices"));
+            return FALSE;
+        }
+        if(!mesh->indices) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate raw mesh indices"));
+            return FALSE;
+        }
+
+        /* VERTEX IMPLEMENTATION DEPENDENT */ {
+            for(u32 i = 0; i < vertex_count; i++) {
+                mesh->vertices[i] = (Vertex) {
+                    .position = {
+                        vertices_v1[i].position[0],
+                        vertices_v1[i].position[1],
+                        vertices_v1[i].position[2]
+                    }
+                };
+            }
+            for(u32 i = 0; i < index_count; i++) {
+                mesh->indices[i] = (u16)indices_v1[i];
+            }
+        }
+        return TRUE;
+    }
+    /* failed to identify file version */
+    MSG_ERROR(msg_callback, &TRACED_STR("mesh file has unknown version"));
+    return FALSE;
+}
+
+/* requires temporary staging buffer and transfer submit */
+b32 createMeshBuffers_DescreteModel(Meshes *meshes) {
+
+}
+
+/* doesnt require additional buffers, wriet directly to device local buffers :) */
+b32 createMeshBuffers_IntegratedModel() {
+
+}
+
+b32 createRenderMeshes(RenderContext *render_context, u32 mesh_count, const MeshInfo *mesh_infos, Stack *init_stack) {
+    pushStack(init_stack);
+    String log_str = {
+        .string = (char[256]){0},
+        .size = 256
+    };
+
+    VulkanContext *vulkan_context = render_context->vulkan_context;
+    Meshes *meshes = &render_context->render_meshes;
+
+    /* arena is created because we need simontaneously allocate RawMesh structs and reallocate read_buffer */
+    Arena mesh_arena = (Arena){0};
+    if(!createArena(&mesh_arena, 1024 * 1024 * 256, 1024 * 64)) {
+        MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to create mesh_arena"));
+        return FALSE;
+    }
+
+    /* vram infos will be used to bind memory to created buffers vertex and index, thats why *2 */
+    VramRegion *vram_mesh_regions = allocateStack(init_stack, sizeof(VramRegion) * mesh_count * 2, 0);
+    if(!vram_mesh_regions) {
+        MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate vram_mesh_regions array for meshes"));
+        return FALSE;
+    }
+
+    /* allocate space for mesh resources */
+    meshes->render_meshes = allocateArena(&render_context->resource_arena, sizeof(RenderMesh) * mesh_count, 0);
+    if(!meshes->render_meshes) {
+        MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate render_meshes array on resource arena"));
+        return FALSE;
+    }
+    meshes->meshes_count = mesh_count;
+
+    /* read buffer should be allocated last on stack, otherwise reallocation will break memory continuity */
+    Buffer read_buffer = {
+        .buffer = allocateStack(init_stack, 1024 * 64, 0),
+        .size = 1024 * 64
+    };
+    if(!read_buffer.buffer) {
+        MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate read buffer for meshes"));
+        return FALSE;
+    }
+
+    VramInfo vram_info = {.memory_type_bits = U32_MAX, .aligment = 1};
+    u32 vertex_buffer_flags = 0;
+    u32 index_buffer_flags = 0;
+    /* set different flags depending on device model */
+    if(vulkan_context->device_model == DEVICE_MODEL_DESCRETE) {
+        /* memory flags */
+        vram_info.mandatory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        vram_info.restricted_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+        /* buffer suage */
+        vertex_buffer_flags = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        index_buffer_flags = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    }
+    if(vulkan_context->device_model == DEVICE_MODEL_INTEGRATED) {
+        /* memory flags */
+        vram_info.mandatory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        /* buffer suage */
+        vertex_buffer_flags = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        index_buffer_flags = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    }
+
+    /* create mesh structs */
+    RenderMesh *render_meshes = meshes->render_meshes;
+    for(u32 i = 0; i < mesh_count; i++) {
+        RawMesh raw_mesh = (RawMesh){0};
+        /* read file to raw mesh */
+        if(!createRawMesh(&mesh_infos[i].file, render_context->msg_callback, &read_buffer, init_stack, &mesh_arena, &raw_mesh)) {
+            stringPattern(&TRACED_STR("failed to create raw mesh from file: %s"), (const void *[]){&mesh_infos[i].file}, &log_str);
+            MSG_ERROR(render_context->msg_callback, &log_str);
+            return FALSE;
+        }
+
+        /* zero mesh */
+        render_meshes[i] = (RenderMesh){0};
+        /* buffer infos */
+        const VkBufferCreateInfo vertex_buffer_info = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .usage = vertex_buffer_flags,
+            .size = sizeof(Vertex) * raw_mesh.vertex_count,
+            .queueFamilyIndexCount = 1,
+            .pQueueFamilyIndices = &vulkan_context->render_queue_id,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+        };
+        const VkBufferCreateInfo index_buffer_info = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .usage = index_buffer_flags,
+            .size = sizeof(u16) * raw_mesh.index_count,
+            .queueFamilyIndexCount = 1,
+            .pQueueFamilyIndices = &vulkan_context->render_queue_id,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+        };
+        /* create buffers */
+        if(vkCreateBuffer(vulkan_context->device, &vertex_buffer_info, NULL, &render_meshes[i].vertex_buffer) != VK_SUCCESS) {
+            stringPattern(&TRACED_STR("failed to create vertex buffer file: %s"), (const void *[]){&mesh_infos[i].file}, &log_str);
+            MSG_ERROR(render_context->msg_callback, &log_str);
+            return FALSE;
+        }
+        if(vkCreateBuffer(vulkan_context->device, &index_buffer_info, NULL, &render_meshes[i].index_buffer) != VK_SUCCESS) {
+            stringPattern(&TRACED_STR("failed to create index buffer file: %s"), (const void *[]){&mesh_infos[i].file}, &log_str);
+            MSG_ERROR(render_context->msg_callback, &log_str);
+            return FALSE;
+        }
+
+        /* get memory requirements */
+        VkMemoryRequirements vertex_buffer_requirements = (VkMemoryRequirements){0};
+        VkMemoryRequirements index_buffer_requirements = (VkMemoryRequirements){0};
+        vkGetBufferMemoryRequirements(vulkan_context->device, render_meshes[i].vertex_buffer, &vertex_buffer_requirements);
+        vkGetBufferMemoryRequirements(vulkan_context->device, render_meshes[i].index_buffer, &index_buffer_requirements);
+
+        /* align vram offset for vertex buffer */
+        vram_info.size = ALIGN(vram_info.size, vertex_buffer_requirements.alignment);
+        vram_mesh_regions[i * 2] = (VramRegion) {
+            .offset = vram_info.size,
+            .size = vertex_buffer_requirements.size
+        };
+        /* align vram offset again for index buffer, written after vertex buffer */
+        vram_info.size = ALIGN((vram_info.size + vertex_buffer_requirements.size), index_buffer_requirements.alignment);
+        vram_mesh_regions[i * 2 + 1] = (VramRegion) {
+            .offset = vram_info.size,
+            .size = index_buffer_requirements.size
+        };
+
+        /* adjust stats of vram info */
+        vram_info.size = vram_info.size + index_buffer_requirements.size;
+        vram_info.memory_type_bits = vram_info.memory_type_bits & vertex_buffer_requirements.memoryTypeBits & index_buffer_requirements.memoryTypeBits;
+    }
+    /* allocate vram block */
+    if(!allocateVram(vulkan_context, &vram_info, &render_context->render_meshes.mesh_device_vram)) {
+        MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate device render meshes vram"));
+        return FALSE;
+    }
+    /* bind vram */
+
+
+    freeArena(&mesh_arena);
+    popStack(init_stack);
+    return FALSE;
 }
 
 
@@ -622,7 +856,7 @@ RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderCo
         }
 
         /* CALL TO ALLOCATOR */ {
-            if(!allocateVram(vulkan_context, &images_alloc_info, &context->images_vram)) {
+            if(!allocateVram(vulkan_context, &images_alloc_info, &context->images_device_vram)) {
                 MSG_ERROR(context->msg_callback, &TRACED_STR("failed to allocate images vram"));
                 return NULL;
             }
@@ -641,14 +875,14 @@ RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderCo
         context->screen_images.swapchain_image_views = (VkImageView *)((void *)swapchain_image_buffer + MAX_SWAPCHAIN_IMAGES);
 
         /* create screen textures */
-        if(!createScreenTextures(vulkan_context, &context->images_vram, context->msg_callback, &context->render_settings, &context->screen_images)) {
+        if(!createScreenTextures(vulkan_context, &context->images_device_vram, context->msg_callback, &context->render_settings, &context->screen_images)) {
             MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create screen textures"));
             return NULL;
         }
     }
 
-    if(info->render_program_count != 0) {
-        if(!createShaderPrograms(context, info->render_program_count, info->render_programs, &init_stack)) {
+    if(info->program_count != 0) {
+        if(!createShaderPrograms(context, info->program_count, info->programs, &init_stack)) {
             MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create shader shader_programs"));
             return NULL;
         }
@@ -702,7 +936,7 @@ void destroyRenderContext(RenderContext *context) {
     }
 
     /* FREE MEMORY */ {
-        freeVram(vulkan_context, &context->images_vram);
+        freeVram(vulkan_context, &context->images_device_vram);
         freeArena(&context->resource_arena);
     }
 
@@ -791,7 +1025,7 @@ b32 runRenderLoop(RenderContext *render_context, RenderUpdate_pfn update_callbac
             if(aquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
                 /* recreate screen textures */
                 vkDeviceWaitIdle(vulkan_context->device);
-                if(!createScreenTextures(vulkan_context, &render_context->images_vram, render_context->msg_callback, &render_context->render_settings, &render_context->screen_images)) {
+                if(!createScreenTextures(vulkan_context, &render_context->images_device_vram, render_context->msg_callback, &render_context->render_settings, &render_context->screen_images)) {
                     MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to recreate swapchain"));
                     return FALSE;
                 }
@@ -913,7 +1147,7 @@ b32 runRenderLoop(RenderContext *render_context, RenderUpdate_pfn update_callbac
             if(present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR) {
                 vkDeviceWaitIdle(vulkan_context->device);
                 /* recreate screen textures */
-                if(!createScreenTextures(vulkan_context, &render_context->images_vram, render_context->msg_callback, &render_context->render_settings, &render_context->screen_images)) {
+                if(!createScreenTextures(vulkan_context, &render_context->images_device_vram, render_context->msg_callback, &render_context->render_settings, &render_context->screen_images)) {
                     MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to recreate swapchain"));
                     return FALSE;
                 }

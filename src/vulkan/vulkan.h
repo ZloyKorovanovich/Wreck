@@ -120,11 +120,40 @@ typedef struct {
 } ShaderProgram;
 
 typedef struct {
+    /* all pointer allocations are made on reasouce_arena */
     VkPipelineLayout pipeline_layout;
     ShaderProgram *shader_programs;
     u32 *resources_usage;
     u32 program_count;
 } Programs;
+
+
+typedef struct {
+    f32 position[3];
+    f32 normal[3];
+    f32 uv[2];
+} Vertex;
+
+typedef struct {
+    Vertex *vertices;
+    u16 *indices;
+    u32 vertex_count;
+    u32 index_count;
+} RawMesh;
+
+typedef struct {
+    VkBuffer vertex_buffer;
+    VkBuffer index_buffer;
+    u32 vertex_count;
+    u32 index_count;
+} RenderMesh;
+
+typedef struct {
+    /* all pointer allocations are made on reasouce_arena */
+    RenderMesh *render_meshes;
+    Vram mesh_device_vram;
+    u32 meshes_count;
+} Meshes;
 
 /* context of render queue */
 struct RenderContext {
@@ -135,12 +164,11 @@ struct RenderContext {
     ScreenImages screen_images;
     /* shader shader_programs */
     Programs shader_programs;
+    Meshes render_meshes;
     /* callback for logs and errors */
     MsgCallback_pfn msg_callback;
-    /* resources */
-    VkDescriptorPool descriptor_pool;
     /* memory */
-    Vram images_vram;
+    Vram images_device_vram;
     /* commands */
     VkCommandPool command_pool;
 };

@@ -47,7 +47,7 @@ const ShaderProgramInfo c_shader_programs[] = {
 
 void updateCallback(UpdateInfo *info, RenderCmd *render_cmd) {
     beginRendering(render_cmd, 1, (u32[]){RENDER_ATTACHMENT_SCREEN_COLOR_ID}, RENDER_ATTACHMENT_SCREEN_DEPTH_ID); 
-    drawProcedural(render_cmd, SHADER_PROGRAM_TRIANGLE, 3, 1);
+    drawProcedural(render_cmd, SHADER_PROGRAM_TRIANGLE, 18, 1);
     endRendering(render_cmd);
 }
 
@@ -74,8 +74,8 @@ i32 main(i32 argc, char **argv) {
     /* render context creation */
     const RenderContextInfo render_info = {
         .vulkan_context = vulkan_context,
-        .render_programs = c_shader_programs,
-        .render_program_count = ARRAY_SIZE(c_shader_programs),
+        .programs = c_shader_programs,
+        .program_count = ARRAY_SIZE(c_shader_programs),
         .msg_callback = &msgCallback
     };
     RenderContext *render_context = createRenderContext(&allocateContext, &render_info);
