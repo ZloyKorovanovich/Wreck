@@ -179,6 +179,7 @@ struct RenderCmd {
     RenderContext *render_context;
     VkCommandBuffer command_buffer;
     ShaderProgram *last_shader_program;
+    RenderMesh *last_render_mesh;
 
     VkRenderingAttachmentInfoKHR color_attachments[MAX_COLOR_ATTACHMENTS];
     VkRenderingAttachmentInfoKHR depth_attachment;

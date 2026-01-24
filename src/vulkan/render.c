@@ -291,14 +291,45 @@ VkPipeline createGraphicsPipeline(
         .pDynamicStates = (const VkDynamicState[]){VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR}
     };
 
-    /* settings for gpu pipeline */
+    /* vertex input */
+    VkVertexInputAttributeDescription vertex_attributes[] = {
+        (VkVertexInputAttributeDescription) {
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32_SFLOAT,
+            .location = 0,
+            .offset = offsetof(Vertex, position)
+        },
+        (VkVertexInputAttributeDescription) {
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32_SFLOAT,
+            .location = 1,
+            .offset = offsetof(Vertex, normal)
+        },
+        (VkVertexInputAttributeDescription) {
+            .binding = 0,
+            .format = VK_FORMAT_R32G32_SFLOAT,
+            .location = 2,
+            .offset = offsetof(Vertex, uv)
+        }
+    };
+
+    VkVertexInputBindingDescription vertex_bindings[] = {
+        (VkVertexInputBindingDescription) {
+            .binding = 0,
+            .stride = sizeof(Vertex),
+            .inputRate = VK_VERTEX_INPUT_RATE_VERTEX
+        }
+    };
+
     VkPipelineVertexInputStateCreateInfo vertex_input_state = (VkPipelineVertexInputStateCreateInfo) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-        .vertexAttributeDescriptionCount = 0,
-        .vertexBindingDescriptionCount = 0,
-        .pVertexAttributeDescriptions = NULL,
-        .pVertexBindingDescriptions = NULL
+        .vertexAttributeDescriptionCount = ARRAY_SIZE(vertex_attributes),
+        .vertexBindingDescriptionCount = ARRAY_SIZE(vertex_bindings),
+        .pVertexAttributeDescriptions = vertex_attributes,
+        .pVertexBindingDescriptions = vertex_bindings
     };
+    
+    /* settings for gpu pipeline */
     VkPipelineInputAssemblyStateCreateInfo input_assembly_state = (VkPipelineInputAssemblyStateCreateInfo) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
         .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
@@ -584,9 +615,16 @@ b32 createRawMesh(const String *file, MsgCallback_pfn msg_callback, Buffer *read
     return FALSE;
 }
 
+typedef struct {
+    VkBuffer *host_buffers;
+    u32 host_buffer_count;
+    Vram host_buffers_vram;
+} MeshBuffers_DescreteModel_Heritage;
 /* requires temporary staging buffer and transfer submit */
-b32 createMeshBuffers_DescreteModel(RenderContext *render_context, u32 mesh_count, const MeshInfo *mesh_infos, Stack *init_stack, VkFence fence) {
-    pushStack(init_stack);
+b32 createMeshBuffers_DescreteModel(
+    RenderContext *render_context, u32 mesh_count, const MeshInfo *mesh_infos, Stack *init_stack, 
+    VkFence fence, MeshBuffers_DescreteModel_Heritage *heritage
+) {
     String log_str = {
         .string = (char[256]){0},
         .capacity = 256
@@ -595,6 +633,17 @@ b32 createMeshBuffers_DescreteModel(RenderContext *render_context, u32 mesh_coun
     VulkanContext *vulkan_context = render_context->vulkan_context;
     Meshes *meshes = &render_context->render_meshes;
 
+    /* combined vertex and index buffers and they are really special, 
+        because they should be destroyed out fo scope of this function */
+    VkBuffer *host_mesh_buffers = NULL;
+    host_mesh_buffers = allocateStack(init_stack, sizeof(VkBuffer) * mesh_count, 0);
+    if(!host_mesh_buffers) {
+        MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate host_mesh_buffers array"));
+        return FALSE;
+    }
+
+    /* we push stack here to preserve host_mesh_buffers allocation for later use */
+    pushStack(init_stack);
 
     /* raw mesh array */
     RawMesh *raw_meshes = NULL;
@@ -602,8 +651,6 @@ b32 createMeshBuffers_DescreteModel(RenderContext *render_context, u32 mesh_coun
     VramRegion *device_vertex_regions = NULL;
     VramRegion *device_index_regions = NULL;
     VramRegion *host_mesh_regions = NULL;
-    /* combined vertex and index buffers */
-    VkBuffer *host_mesh_buffers = NULL;
 
     Arena mesh_arena = (Arena){0};
     Buffer read_buffer = (Buffer){0};
@@ -631,9 +678,6 @@ b32 createMeshBuffers_DescreteModel(RenderContext *render_context, u32 mesh_coun
         device_vertex_regions = vram_regions;
         device_index_regions = vram_regions + mesh_count;
         host_mesh_regions = vram_regions + mesh_count * 2;
-
-        /* allocate space for host buffers */
-        host_mesh_buffers = allocateStack(init_stack, sizeof(VkBuffer) * mesh_count, 0);
 
         /* allocate space for mesh resources */
         meshes->meshes_count = mesh_count;
@@ -873,6 +917,14 @@ b32 createMeshBuffers_DescreteModel(RenderContext *render_context, u32 mesh_coun
 
     freeArena(&mesh_arena);
     popStack(init_stack);
+
+    /* fill herritage for freeing later */
+    *heritage = (MeshBuffers_DescreteModel_Heritage) {
+        .host_buffers = host_mesh_buffers,
+        .host_buffer_count = mesh_count,
+        .host_buffers_vram = host_vram
+    };
+
     return TRUE;
 }
 
@@ -891,12 +943,6 @@ RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderCo
             return NULL;
         }
     }
-
-    /* 
-    String msg_string = {
-        .string = (char[256]){0},
-        .capacity = 256 
-    }; */
 
     RenderContext *context = context_allocate(sizeof(RenderContext), 16);
     if(!context) {
@@ -952,6 +998,24 @@ RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderCo
         if(vkCreateCommandPool(vulkan_context->device, &command_pool_info, NULL, &context->command_pool) != VK_SUCCESS) {
             MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create render command pool"));
             return NULL;
+        }
+    }
+
+    /* created in case of descrete gpu model usage */
+    MeshBuffers_DescreteModel_Heritage mesh_buffers_descrete_herritage = (MeshBuffers_DescreteModel_Heritage){0};
+    /* MESHES */ {
+        if(info->mesh_count != 0) {
+            if(vulkan_context->device_model == DEVICE_MODEL_DESCRETE) {
+                vkResetFences(vulkan_context->device, 1, &transfer_fence);
+                if(!createMeshBuffers_DescreteModel(context, info->mesh_count, info->meshes, &init_stack, transfer_fence, &mesh_buffers_descrete_herritage)) {
+                    MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create mesh buffers"));
+                    return FALSE;
+                }
+            }
+            if(vulkan_context->device_model == DEVICE_MODEL_INTEGRATED) {
+                MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create mesh buffers"));
+                return FALSE;
+            }
         }
     }
 
@@ -1050,33 +1114,32 @@ RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderCo
         }
     }
 
-    /* MESHES */
-    if(info->mesh_count != 0) {
-        if(vulkan_context->device_model == DEVICE_MODEL_DESCRETE) {
-            vkResetFences(vulkan_context->device, 1, &transfer_fence);
-            if(!createMeshBuffers_DescreteModel(context, info->mesh_count, info->meshes, &init_stack, transfer_fence)) {
-                MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create mesh buffers"));
-                return FALSE;
+    /* PROGRAMS */ {
+        if(info->program_count != 0) {
+            if(!createShaderPrograms(context, info->program_count, info->programs, &init_stack)) {
+                MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create shader shader_programs"));
+                return NULL;
             }
         }
-        if(vulkan_context->device_model == DEVICE_MODEL_INTEGRATED) {
-            MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create mesh buffers"));
-            return FALSE;
-        }
     }
 
-    /* PROGRAMS */
-    if(info->program_count != 0) {
-        if(!createShaderPrograms(context, info->program_count, info->programs, &init_stack)) {
-            MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create shader shader_programs"));
-            return NULL;
+    /* CLEANUP */ {
+        if(transfer_fence) {
+            /* first wait for it then destroy */
+            vkWaitForFences(vulkan_context->device, 1, &transfer_fence, TRUE, U64_MAX);
+            vkDestroyFence(vulkan_context->device, transfer_fence, NULL);
         }
-    }
-
-    if(transfer_fence) {
-        /* first wait for it then destroy */
-        vkWaitForFences(vulkan_context->device, 1, &transfer_fence, TRUE, U64_MAX);
-        vkDestroyFence(vulkan_context->device, transfer_fence, NULL);
+        /* MESH BUFFERS HERRITAGE */ {
+            if(mesh_buffers_descrete_herritage.host_buffer_count != 0) {
+                for(u32 i = 0; i < mesh_buffers_descrete_herritage.host_buffer_count; i++) {
+                    vkDestroyBuffer(vulkan_context->device, mesh_buffers_descrete_herritage.host_buffers[i], NULL);
+                }
+            }
+            if(mesh_buffers_descrete_herritage.host_buffers_vram.memory) {
+                freeVram(vulkan_context, &mesh_buffers_descrete_herritage.host_buffers_vram);
+            }
+            mesh_buffers_descrete_herritage = (MeshBuffers_DescreteModel_Heritage){0};
+        }
     }
 
     return context;
@@ -1450,4 +1513,27 @@ void drawProcedural(RenderCmd *cmd, u32 program_id, u32 vertex_count, u32 instan
     }
     /* draw call */
     vkCmdDraw(cmd->command_buffer, vertex_count, instance_count, 0 , 0);
+}
+
+void drawMesh(RenderCmd *cmd, u32 program_id, u32 mesh_id, u32 instance_count) {
+    const RenderContext *render_context = cmd->render_context;
+
+    ShaderProgram *last_program = cmd->last_shader_program;
+    ShaderProgram *new_program = &render_context->shader_programs.shader_programs[program_id];
+    /* if pipeline changed, bind new pipeline */
+    if(last_program != new_program) {
+        vkCmdBindPipeline(cmd->command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, new_program->pipeline);
+        cmd->last_shader_program = new_program;
+    }
+
+    RenderMesh *last_mesh = cmd->last_render_mesh;
+    RenderMesh *new_mesh = &render_context->render_meshes.render_meshes[mesh_id];
+    /* if mesh chenaged, bind new mesh */
+    if(last_mesh != new_mesh) {
+        vkCmdBindVertexBuffers(cmd->command_buffer, 0, 1, &new_mesh->vertex_buffer, &(VkDeviceSize){0});
+        vkCmdBindIndexBuffer(cmd->command_buffer, new_mesh->index_buffer, 0, VK_INDEX_TYPE_UINT16);
+        cmd->last_render_mesh = new_mesh;
+    }
+    /* draw call */
+    vkCmdDrawIndexed(cmd->command_buffer, new_mesh->index_count, instance_count, 0, 0, 0);
 }
