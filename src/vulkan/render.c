@@ -552,6 +552,7 @@ b32 createRawMesh(const String *file, MsgCallback_pfn msg_callback, Buffer *read
             .vertex_count = vertex_count,
             .index_count = index_count
         };
+
         if(!mesh->vertices) {
             MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate raw mesh vertices"));
             return FALSE;
@@ -575,6 +576,7 @@ b32 createRawMesh(const String *file, MsgCallback_pfn msg_callback, Buffer *read
                 mesh->indices[i] = (u16)indices_v1[i];
             }
         }
+       
         return TRUE;
     }
     /* failed to identify file version */
@@ -587,7 +589,7 @@ b32 createMeshBuffers_DescreteModel(RenderContext *render_context, u32 mesh_coun
     pushStack(init_stack);
     String log_str = {
         .string = (char[256]){0},
-        .size = 256
+        .capacity = 256
     };
     /* simple access pointers */
     VulkanContext *vulkan_context = render_context->vulkan_context;
@@ -614,7 +616,8 @@ b32 createMeshBuffers_DescreteModel(RenderContext *render_context, u32 mesh_coun
         }
 
         /* raw mesh array for vertex and index pointers */
-        if(!allocateStack(init_stack, sizeof(RawMesh) * mesh_count, 0)) {
+        raw_meshes = allocateStack(init_stack, sizeof(RawMesh) * mesh_count, 0);
+        if(!raw_meshes) {
             MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate raw_meshes array"));
             return FALSE;
         }
@@ -930,12 +933,25 @@ RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderCo
     /* fence is needed to sync transfer operations on gpu, its not needed on integrated device model */
     VkFence transfer_fence = NULL;
     if(vulkan_context->device_model == DEVICE_MODEL_DESCRETE) {
-        const VkFenceCreateInfo transfer_fenc_info = {
-            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO
+        const VkFenceCreateInfo transfer_fence_info = {
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            .flags = VK_FENCE_CREATE_SIGNALED_BIT /* so that wait for fences will not stall if fence is not used */
         };
-        if(vkCreateFence(vulkan_context->device, &transfer_fenc_info, NULL, &transfer_fence) != VK_SUCCESS) {
+        if(vkCreateFence(vulkan_context->device, &transfer_fence_info, NULL, &transfer_fence) != VK_SUCCESS) {
             MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create transfer fence"));
             return FALSE;
+        }
+    }
+
+    /* COMMAND POOL */ {
+        const VkCommandPoolCreateInfo command_pool_info = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            .queueFamilyIndex = vulkan_context->render_queue_id
+        };
+        if(vkCreateCommandPool(vulkan_context->device, &command_pool_info, NULL, &context->command_pool) != VK_SUCCESS) {
+            MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create render command pool"));
+            return NULL;
         }
     }
 
@@ -1034,21 +1050,22 @@ RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderCo
         }
     }
 
-    /* MESHES */ {
-        if(info->mesh_count != 0) {
-            if(vulkan_context->device_model == DEVICE_MODEL_DESCRETE) {
-                if(!createMeshBuffers_DescreteModel(context, info->mesh_count, info->meshes, &init_stack, transfer_fence)) {
-                    MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create mesh buffers"));
-                    return FALSE;
-                }
-            }
-            if(vulkan_context->device_model == DEVICE_MODEL_INTEGRATED) {
+    /* MESHES */
+    if(info->mesh_count != 0) {
+        if(vulkan_context->device_model == DEVICE_MODEL_DESCRETE) {
+            vkResetFences(vulkan_context->device, 1, &transfer_fence);
+            if(!createMeshBuffers_DescreteModel(context, info->mesh_count, info->meshes, &init_stack, transfer_fence)) {
                 MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create mesh buffers"));
                 return FALSE;
             }
         }
+        if(vulkan_context->device_model == DEVICE_MODEL_INTEGRATED) {
+            MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create mesh buffers"));
+            return FALSE;
+        }
     }
 
+    /* PROGRAMS */
     if(info->program_count != 0) {
         if(!createShaderPrograms(context, info->program_count, info->programs, &init_stack)) {
             MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create shader shader_programs"));
@@ -1056,20 +1073,9 @@ RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderCo
         }
     }
 
-    /* COMMAND POOL */ {
-        const VkCommandPoolCreateInfo command_pool_info = {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-            .queueFamilyIndex = vulkan_context->render_queue_id
-        };
-        if(vkCreateCommandPool(vulkan_context->device, &command_pool_info, NULL, &context->command_pool) != VK_SUCCESS) {
-            MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create render command pool"));
-            return NULL;
-        }
-    }
-
     if(transfer_fence) {
         /* first wait for it then destroy */
+        vkWaitForFences(vulkan_context->device, 1, &transfer_fence, TRUE, U64_MAX);
         vkDestroyFence(vulkan_context->device, transfer_fence, NULL);
     }
 
@@ -1078,10 +1084,6 @@ RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderCo
 
 void destroyRenderContext(RenderContext *context) {
     VulkanContext* vulkan_context = context->vulkan_context;
-
-    /* COMMAND POOL */ {
-        vkDestroyCommandPool(vulkan_context->device, context->command_pool, NULL);
-    }
 
     /* SHADER PROGRAMS */ {
         const u32 program_count = context->shader_programs.program_count;
@@ -1099,6 +1101,16 @@ void destroyRenderContext(RenderContext *context) {
         vkDestroyPipelineLayout(vulkan_context->device, context->shader_programs.pipeline_layout, NULL);
     }
 
+    /* MESHES */ {
+        const u32 mesh_count = context->render_meshes.meshes_count;
+        RenderMesh* render_meshes = context->render_meshes.render_meshes;
+        for(u32 i = 0; i < mesh_count; i++) {
+            vkDestroyBuffer(vulkan_context->device, render_meshes[i].vertex_buffer, NULL);
+            vkDestroyBuffer(vulkan_context->device, render_meshes[i].index_buffer, NULL);
+        }
+        freeVram(vulkan_context, &context->render_meshes.mesh_device_vram);
+    }
+
     /* SCREEN IMAGES */ {
         for(u32 i = 0; i < context->screen_images.swapchain_image_count; i++) {
             vkDestroyImageView(vulkan_context->device, context->screen_images.swapchain_image_views[i], NULL);
@@ -1111,6 +1123,10 @@ void destroyRenderContext(RenderContext *context) {
     /* FREE MEMORY */ {
         freeVram(vulkan_context, &context->images_device_vram);
         freeArena(&context->resource_arena);
+    }
+
+    /* COMMAND POOL */ {
+        vkDestroyCommandPool(vulkan_context->device, context->command_pool, NULL);
     }
 
     *context = (RenderContext){0};

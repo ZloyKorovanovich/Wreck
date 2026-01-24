@@ -38,10 +38,23 @@ typedef enum {
     SHADER_PROGRAM_TRIANGLE = 0,
     SHADER_PROGRAM_COUNT
 } ShaderPorgrams;
+
 const ShaderProgramInfo c_shader_programs[] = {
-    [SHADER_PROGRAM_TRIANGLE] = (ShaderProgramInfo){
+    [SHADER_PROGRAM_TRIANGLE] = (ShaderProgramInfo) {
         .vertex_shader = CONST_STRING("out/data/triangle_v.spv"),
         .fragment_shader = CONST_STRING("out/data/triangle_f.spv")
+    }
+};
+
+
+typedef enum {
+    MESH_SHITY_QUAD = 0,
+    MESH_SHITY_QUAD_COUNT
+} Meshes;
+
+const MeshInfo c_mesh_infos[] = {
+    [MESH_SHITY_QUAD] = (MeshInfo) {
+        .file = CONST_STRING("out/data/shity_quad_v1.model")
     }
 };
 
@@ -76,6 +89,8 @@ i32 main(i32 argc, char **argv) {
         .vulkan_context = vulkan_context,
         .programs = c_shader_programs,
         .program_count = ARRAY_SIZE(c_shader_programs),
+        .meshes = c_mesh_infos,
+        .mesh_count = ARRAY_SIZE(c_mesh_infos),
         .msg_callback = &msgCallback
     };
     RenderContext *render_context = createRenderContext(&allocateContext, &render_info);

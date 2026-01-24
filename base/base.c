@@ -36,7 +36,7 @@
             return NULL;
         }
         /* default aligment if aligment == 0 */
-        aligment = (aligment == 0) ? 8 : aligment;
+        aligment = (aligment == 0) ? DEFAULT_ALIGMENT : aligment;
         /* calculate where user allocation will begin */
         u64 alloc_offset = ALIGN(((u64)arena->end - (u64)arena->begin), aligment);
         /* if exceed virtual size, things are very bad */
@@ -108,7 +108,7 @@
             return NULL;
         }
         /* default aligment if aligment == 0 */
-        aligment = (aligment == 0) ? 8 : aligment;
+        aligment = (aligment == 0) ? DEFAULT_ALIGMENT : aligment;
         /* calculate where user allocation will begin */
         u64 alloc_offset = ALIGN(((u64)stack->end - (u64)stack->begin), aligment);
         /* if exceed virtual size, things are very bad */
@@ -199,10 +199,11 @@ b32 stringAddString(String *dst, const String *src) {
     /* set iterator to the end of dst (on '\0' symbol) */
     char *copy_begin = &dst->string[dst->size];
     /* copy with '\0' in the end */
-    for(u64 i = 0; i <= src->size; i++) {
+    for(u64 i = 0; i < src->size; i++) {
         copy_begin[i] = src->string[i];
     }
     dst->size = new_size;
+    dst->string[new_size] = '\0';
     return TRUE;
 }
 
@@ -262,6 +263,19 @@ b32 stringAddf64(String *dst, u64 num) {
 }
 
 
+i64 stirngToI64(const String *src) {
+    return 0;
+}
+
+u64 stirngToU64(const String *src) {
+    return 0;
+}
+
+f64 stringToF64(const String *src) {
+    return 0.0;
+}
+
+
 b32 stringUpFolder(String *path) {
     for(u64 i = path->size - 1; i >= 0; i--) {
         if(path->string[i] == '/' || path->string[i] == '\\') {
@@ -300,12 +314,11 @@ b32 stringPattern(const String *pattern, const void** elements, String *out_stri
         }
         if(pattern->string[i] == '%' && pattern->string[i + 1] == '%') i++;
         /* check if exceed limit of memory */
-        if(out_string->size > out_string->capacity) {
+        if(out_string->size >= out_string->capacity) {
             return FALSE;
         }
         out_string->string[out_string->size++] = pattern->string[i];
     }
-
     return TRUE;
 }
 
@@ -364,44 +377,61 @@ b32 scanConsole(String *string) {
     return ReadFile(s_std_handles.in, string, string->capacity, (u32x*)&string->size, NULL);
 }
 
-
-b32 file2Buffer(const String *path, Buffer *buffer, Allocate_pfn realloc_callback) {
-    HANDLE file = CreateFile(path->string, FILE_READ_ACCESS, 0, NULL, 0, 0, NULL);
-    if(!file) {
-        return FALSE;
+/* retruns 0 if fail, size of file in other cases */
+u64 fileToBuffer(const String *path, Buffer *buffer) {
+    HANDLE file = CreateFile(path->string, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if(file == INVALID_HANDLE_VALUE) {
+        return 0;
     }
-    u32 size_low, size_high;
-    size_low = GetFileSize(file, (u32x*)&size_high);
-    u64 file_size = ((u64)size_low & U32_MAX) | (((u64)size_high << 32) & 0xffffffff00000000);
-    /* if buffer is too small */
-    if(file_size > buffer->size) {
-        /* if no callback provided, can not read into file */
-        if(!realloc_callback) {
-            CloseHandle(file);
-            return FALSE;
-        }
-        /* if callback exists try to reallocate buffer */
-        void *realloc_pointer = realloc_callback(file_size, 1);
-        if(!realloc_pointer) {
-            CloseHandle(file);
-            return FALSE;
-        }
-
-        *buffer = (Buffer) {
-            .buffer = realloc_pointer,
-            .size = file_size
-        };
+    
+    u64 file_size = 0;
+    /* RETARDED WAY OF COMPUTING SIZE */ {
+        u32x size_low;
+        u32x size_high;
+        size_low = GetFileSize(file, &size_high);
+        file_size = ((u64)size_low) | ((u64)size_high << 32);
     }
-    /* read file to buffer */
-    if(!ReadFile(file, buffer->buffer, file_size, NULL, NULL)) {
+    if(file_size == 0) {
         CloseHandle(file);
+        return 0;
+    }
+    if(file_size > buffer->size) {
+        CloseHandle(file);
+        return file_size;
+    }
+    
+    /* read file contents */
+    u64 read_bytes = 0;
+    while (read_bytes != file_size) {
+        u32x just_read = 0;
+        if(!ReadFile(file, (u8*)buffer->buffer + read_bytes, (u32)MIN(file_size - read_bytes, (u64)U32_MAX), &just_read, NULL)) {
+            CloseHandle(file);
+            return 0;
+        }
+        read_bytes += just_read;
+    }
+
+    CloseHandle(file);
+
+    return file_size;
+}
+
+b32 bufferToFile(const String *path, const Buffer *buffer) {
+    HANDLE file = CreateFile(path->string, GENERIC_WRITE, FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if(file == INVALID_HANDLE_VALUE) {
         return FALSE;
+    }
+
+    u64 bytes_written = 0;
+    while(bytes_written != buffer->size) {
+        u32x just_written = 0;
+        if(!WriteFile(file, (u8*)buffer->buffer + bytes_written, (u32)(MIN(buffer->size - bytes_written, (u64)U32_MAX)), &just_written, NULL)) {
+            CloseHandle(file);
+            return FALSE;
+        }
+        bytes_written += just_written;
     }
 
     CloseHandle(file);
     return TRUE;
-}
-
-b32 buffer2File(const String *path, const Buffer *buffer) {
-    return FALSE;
 }

@@ -30,6 +30,10 @@ typedef unsigned b32;
 #define TRUE (1)
 #define FALSE (0)
 
+#ifndef NULL
+  #define NULL ((void *)0)
+#endif
+
 /*======================================================================
     LIMITS
   ======================================================================*/
@@ -68,6 +72,8 @@ typedef unsigned b32;
 /*======================================================================
     ALLOCATORS
   ======================================================================*/
+
+#define DEFAULT_ALIGMENT (16)
 
 #ifndef ARENA_CUSTOM_STATS
     #define ARENA_DEFAULT_VIRTUAL_SIZE (1024 * 1024 * 1024)
@@ -149,6 +155,7 @@ typedef struct {
 } String;
 
 #define CONST_STRING(cstr) ((String){(char *)cstr, sizeof(cstr)})
+#define IS_EMPTY_STR(str) (str.size == 0)
 
 void stringZero(String *str);
 
@@ -159,6 +166,10 @@ b32 stringAddChar(String *dst, char c);
 b32 stringAddU64(String *dst, u64 num);
 b32 stringAddI64(String *dst, i64 num);
 b32 stringAddf64(String *dst, u64 num);
+
+i64 stirngToI64(const String *src);
+u64 stirngToU64(const String *src);
+f64 stringToF64(const String *src);
 
 /* used for moving up in directories */
 b32 stringUpFolder(String *path);
@@ -177,7 +188,7 @@ b32 printConsole(const String *string);
 b32 errorConsole(const String *string);
 b32 scanConsole(String *string);
 
-b32 file2Buffer(const String *path, Buffer *buffer, Allocate_pfn realloc_callback);
-b32 buffer2File(const String *path, const Buffer *buffer);
+u64 fileToBuffer(const String *path, Buffer *buffer);
+b32 bufferToFile(const String *path, const Buffer *buffer);
 
 #endif
