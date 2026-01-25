@@ -1,5 +1,9 @@
 #include "vulkan.h"
 
+/*======================================================================
+    CONSTANT SETTINGS
+  ======================================================================*/
+
 /* settings for debug utils messenger callback */
 const String c_debug_layer_name = CONST_STRING("VK_LAYER_KHRONOS_validation");
 const VkDebugUtilsMessageSeverityFlagsEXT c_debug_message_severity = (
@@ -17,6 +21,25 @@ const char *c_required_device_extension_names[] = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,
     VK_KHR_SPIRV_1_4_EXTENSION_NAME
 };
+
+/* debug utils messenger callback */
+VKAPI_ATTR VkBool32 VKAPI_CALL validationDebugCallback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT *callback_data, void *user_data
+) {
+    String string = (String) {
+        .string = (char[512]){0},
+        .capacity = 512
+    };
+
+    stringPattern(&CONST_STRING(":: vk message :: %c\n"), (const void *[]){callback_data->pMessage}, &string);
+    printConsole(&string);
+    return !(severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT);
+}
+
+
+/*======================================================================
+    DEVICE SELECTION
+  ======================================================================*/
 
 #define QUEUE_MASK_ALL (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT)
 
@@ -37,7 +60,7 @@ typedef struct {
     char name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
 } DeviceInfo;
 
-
+/* checks if dsevice is suitable for our needs and fills information struct */
 b32 checkPhysicalDevice(VkPhysicalDevice device, MsgCallback_pfn msg_callback, DeviceInfo *info, Stack *stack) {
     /* be careful inside this function, it might return false because of failed allocation 
         also dont forget to pop stack before return, better use goto _success; goto _fail;*/
@@ -147,72 +170,9 @@ const DeviceInfo *compareDevices(const DeviceInfo *a, const DeviceInfo *b) {
 }
 
 
-b32 allocateVram(VulkanContext *vulkan_context, const VramInfo *info, Vram *vram) {
-    if(info->size == 0 || info->memory_type_bits == 0) return FALSE;
-
-    const VkMemoryHeap *memory_heaps = vulkan_context->memory_properties.memoryHeaps;
-    const VkMemoryType *memory_types = vulkan_context->memory_properties.memoryTypes;
-    const u32 memory_type_count = vulkan_context->memory_properties.memoryTypeCount;
-
-    u32 memory_id = U32_MAX;
-    u32 heap_id = U32_MAX;
-    /* check memory types for requirements */
-    for(u32 i = 0; i < memory_type_count; i++) {
-        const u32 flags = memory_types[i].propertyFlags;
-        /* not sutiable conditions */
-        if((flags & info->mandatory_flags) != info->mandatory_flags) continue;
-        if(flags & info->restricted_flags) continue;
-        if(!((info->memory_type_bits >> i) & 0x1)) continue;
-        if((memory_heaps[memory_types[i].heapIndex].size < info->size)) continue;
-
-        memory_id = i;
-        heap_id = memory_types[i].heapIndex;
-        goto _found_memory_id;
-    }
-    return FALSE;
-    
-    _found_memory_id: {};
-
-    /* allocate memory */
-    VkMemoryAllocateInfo allocate_info = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .memoryTypeIndex = memory_id,
-        .allocationSize = info->size
-    };
-    VkDeviceMemory device_memory = NULL;
-    if(vkAllocateMemory(vulkan_context->device, &allocate_info, NULL, &device_memory) != VK_SUCCESS) {
-        return FALSE;
-    }
-
-    *vram = (Vram) {
-        .memory = device_memory,
-        .size = info->size,
-        .heap_id = heap_id,
-        .memory_id = memory_id
-    };
-    return TRUE;
-}
-
-void freeVram(VulkanContext *vulkan_context, Vram *vram) {
-    vkFreeMemory(vulkan_context->device, vram->memory, NULL);
-    vulkan_context->memory_properties.memoryHeaps[vram->heap_id].size += vram->size;
-    *vram = (Vram){0};
-}
-
-
-/* debug utils messenger callback */
-VKAPI_ATTR VkBool32 VKAPI_CALL validationDebugCallback(
-    VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT *callback_data, void *user_data
-) {
-    String string = (String) {
-        .string = (char[512]){0},
-        .capacity = 512
-    };
-
-    stringPattern(&CONST_STRING(":: vk message :: %c\n"), (const void *[]){callback_data->pMessage}, &string);
-    printConsole(&string);
-    return !(severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT);
-}
+/*======================================================================
+    GLOBAL INTERFACE
+  ======================================================================*/
 
 VulkanContext *createVulkanContext(Allocate_pfn context_allocate, const VulkanContextInfo *info) {
     String msg_string = (String) {
@@ -643,4 +603,61 @@ void destroyVulkanContext(VulkanContext *context) {
     }
 
     MSG_LOG(context->msg_callback, &CONST_STRING("destroyed vulkan context"));
+}
+
+
+/*======================================================================
+    LOCAL INTERFACE
+  ======================================================================*/
+
+b32 allocateVram(VulkanContext *vulkan_context, const VramInfo *info, Vram *vram) {
+    if(info->size == 0 || info->memory_type_bits == 0) return FALSE;
+
+    const VkMemoryHeap *memory_heaps = vulkan_context->memory_properties.memoryHeaps;
+    const VkMemoryType *memory_types = vulkan_context->memory_properties.memoryTypes;
+    const u32 memory_type_count = vulkan_context->memory_properties.memoryTypeCount;
+
+    u32 memory_id = U32_MAX;
+    u32 heap_id = U32_MAX;
+    /* check memory types for requirements */
+    for(u32 i = 0; i < memory_type_count; i++) {
+        const u32 flags = memory_types[i].propertyFlags;
+        /* not sutiable conditions */
+        if((flags & info->mandatory_flags) != info->mandatory_flags) continue;
+        if(flags & info->restricted_flags) continue;
+        if(!((info->memory_type_bits >> i) & 0x1)) continue;
+        if((memory_heaps[memory_types[i].heapIndex].size < info->size)) continue;
+
+        memory_id = i;
+        heap_id = memory_types[i].heapIndex;
+        goto _found_memory_id;
+    }
+    return FALSE;
+    
+    _found_memory_id: {};
+
+    /* allocate memory */
+    VkMemoryAllocateInfo allocate_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .memoryTypeIndex = memory_id,
+        .allocationSize = info->size
+    };
+    VkDeviceMemory device_memory = NULL;
+    if(vkAllocateMemory(vulkan_context->device, &allocate_info, NULL, &device_memory) != VK_SUCCESS) {
+        return FALSE;
+    }
+
+    *vram = (Vram) {
+        .memory = device_memory,
+        .size = info->size,
+        .heap_id = heap_id,
+        .memory_id = memory_id
+    };
+    return TRUE;
+}
+
+void freeVram(VulkanContext *vulkan_context, Vram *vram) {
+    vkFreeMemory(vulkan_context->device, vram->memory, NULL);
+    vulkan_context->memory_properties.memoryHeaps[vram->heap_id].size += vram->size;
+    *vram = (Vram){0};
 }

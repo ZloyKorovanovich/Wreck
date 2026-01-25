@@ -1,6 +1,10 @@
 #include "vulkan.h"
 
 
+/*======================================================================
+    SCREEN
+  ======================================================================*/
+
 b32 configureRenderSettings(const VulkanContext *vulkan_context, Stack* stack, MsgCallback_pfn msg_callback, RenderSettings *settings) {
     pushStack(stack);
     
@@ -227,6 +231,11 @@ b32 createScreenTextures(
 
     return TRUE;
 }
+
+
+/*======================================================================
+    SHADER PROGRAMS
+  ======================================================================*/
 
 /* read buffer should end on the end of stack for easy reallocation */
 VkShaderModule createShaderModule(VkDevice device, const String *file, MsgCallback_pfn msg_callback, Buffer *read_buffer, Stack *stack) {
@@ -543,6 +552,19 @@ b32 createShaderPrograms(RenderContext *render_context, u32 program_count, const
 }
 
 
+/*======================================================================
+    MESHES
+  ======================================================================*/
+
+/* when calling createMeshBuffers_DescreteModel some buffers will be created on the host side, to transfer meshes to gpu local memory,
+    we will do some other cpu work and gpu commands at the same time, so buffers will need to be destructed later, when VkFence,
+    passed to function will be signaled, we will need to destroy that buffer and free memory */
+typedef struct {
+    VkBuffer *host_buffers;
+    u32 host_buffer_count;
+    Vram host_buffers_vram;
+} MeshBuffers_DescreteModel_Heritage;
+
 /* read buffer should end on the end of stack for easy reallocation */
 b32 createRawMesh(const String *file, MsgCallback_pfn msg_callback, Buffer *read_buffer, Stack *stack, Arena *mesh_arena, RawMesh *mesh) {
     /* try to read file to buffer */
@@ -594,7 +616,7 @@ b32 createRawMesh(const String *file, MsgCallback_pfn msg_callback, Buffer *read
             .vertex_count = vertex_count,
             .index_count = index_count
         };
-
+        /* check if allocation succeed */
         if(!mesh->vertices) {
             MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate raw mesh vertices"));
             return FALSE;
@@ -605,6 +627,7 @@ b32 createRawMesh(const String *file, MsgCallback_pfn msg_callback, Buffer *read
         }
 
         /* VERTEX IMPLEMENTATION DEPENDENT */ {
+            /* fill vertices of mesh */
             for(u32 i = 0; i < vertex_count; i++) {
                 mesh->vertices[i] = (Vertex) {
                     .position = {
@@ -615,6 +638,7 @@ b32 createRawMesh(const String *file, MsgCallback_pfn msg_callback, Buffer *read
                     }
                 };
             }
+            /* fill indices of mesh */
             for(u32 i = 0; i < index_count; i++) {
                 mesh->indices[i] = (u16)indices_v1[i];
             }
@@ -627,11 +651,6 @@ b32 createRawMesh(const String *file, MsgCallback_pfn msg_callback, Buffer *read
     return FALSE;
 }
 
-typedef struct {
-    VkBuffer *host_buffers;
-    u32 host_buffer_count;
-    Vram host_buffers_vram;
-} MeshBuffers_DescreteModel_Heritage;
 /* requires temporary staging buffer and transfer submit */
 b32 createMeshBuffers_DescreteModel(
     RenderContext *render_context, u32 mesh_count, const MeshInfo *mesh_infos, Stack *init_stack, 
@@ -710,12 +729,14 @@ b32 createMeshBuffers_DescreteModel(
         }
     }
 
+    /* device local allocation for vertex and index buffers */
     VramInfo device_vram_info = {
         .mandatory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
         .restricted_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
         .memory_type_bits = U32_MAX, 
         .aligment = 1
     };
+    /* host visible allocation for mesh buffers (united vertex and index) */
     VramInfo host_vram_info = {
         .mandatory_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
         .restricted_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -849,12 +870,14 @@ b32 createMeshBuffers_DescreteModel(
     }
 
     /* RAW MESHES TO HOST BUFFERS */ {
+        /* map host memory with mesh buffers */
         void* mapped_memory = NULL;
         if(vkMapMemory(vulkan_context->device, host_vram.memory, 0, host_vram.size, 0, &mapped_memory) != VK_SUCCESS) {
             MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to map host mesh memory"));
             return FALSE;
         }
         
+        /* write mesh buffers with data from raw meshes */
         for(u32 i = 0; i < mesh_count; i++) {
             /* make data hopefuly closer to us and mark it as constant */
             const u32 vertex_count = raw_meshes[i].vertex_count;
@@ -874,10 +897,12 @@ b32 createMeshBuffers_DescreteModel(
             }
         }
 
+        /* unmap memory */
         vkUnmapMemory(vulkan_context->device, host_vram.memory);
     }
 
     /* HOST BUFFERS TO DEVICE */ {
+        /* create command buffer for transfer ops */
         VkCommandBuffer command_buffer = NULL;
         const VkCommandBufferAllocateInfo command_buffer_info = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -890,6 +915,7 @@ b32 createMeshBuffers_DescreteModel(
             return FALSE;
         }
 
+        /* begin buffer, set it as one time usage */
         const VkCommandBufferBeginInfo begin_info = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
@@ -899,6 +925,7 @@ b32 createMeshBuffers_DescreteModel(
             return FALSE;
         }
 
+        /* generate commands for copying from mesh buffers on host to vertex and index buffers on device */
         for(u32 i = 0; i < mesh_count; i++) {
             /* regions to copy, we copy from 1 buffer into 2 buffers */
             const VkBufferCopy vertex_buffer_copy = {
@@ -913,6 +940,7 @@ b32 createMeshBuffers_DescreteModel(
             vkCmdCopyBuffer(command_buffer, host_mesh_buffers[i], render_meshes[i].index_buffer, 1, &index_buffer_copy);
         }
 
+        /* end command buffer */
         if(vkEndCommandBuffer(command_buffer) != VK_SUCCESS) {
             MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to end mesh tramsfer command buffer"));
             return FALSE;
@@ -943,6 +971,10 @@ b32 createMeshBuffers_DescreteModel(
     return TRUE;
 }
 
+
+/*======================================================================
+    INTERFACE
+  ======================================================================*/
 
 RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderContextInfo *info) {
     /* VALIDATION */ {
@@ -1020,13 +1052,17 @@ RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderCo
     MeshBuffers_DescreteModel_Heritage mesh_buffers_descrete_herritage = (MeshBuffers_DescreteModel_Heritage){0};
     /* MESHES */ {
         if(info->mesh_count != 0) {
+            /* if model is descrete meshes will be wrtten to host memory and then transfered to device buffers */
             if(vulkan_context->device_model == DEVICE_MODEL_DESCRETE) {
+                /* fence is set by default, when created, we should unsignal it to use for submit on transfer operations */
                 vkResetFences(vulkan_context->device, 1, &transfer_fence);
+                /* generate buffers, also fill mesh_buffers_descrete_herritage, which should be disposed after synchronization with fence on signaled state */
                 if(!createMeshBuffers_DescreteModel(context, info->mesh_count, info->meshes, &init_stack, transfer_fence, &mesh_buffers_descrete_herritage)) {
                     MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create mesh buffers"));
                     return FALSE;
                 }
             }
+            /* if model is integrated, we dont need any mesh transfers from cpu to gpu, because device local is visible to host */
             if(vulkan_context->device_model == DEVICE_MODEL_INTEGRATED) {
                 MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create mesh buffers"));
                 return FALSE;
@@ -1035,8 +1071,8 @@ RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderCo
     }
 
     /* IMAGES MEMORY LAYOUT */ {
+        /* image allocation has no restrictions on memry types by default, they will be set from memory requirements on textures */
         VramInfo images_alloc_info = {.memory_type_bits = U32_MAX};
-        
         if(vulkan_context->device_model == DEVICE_MODEL_DESCRETE) {
             images_alloc_info.mandatory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
             images_alloc_info.restricted_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
@@ -1437,118 +1473,4 @@ b32 runRenderLoop(RenderContext *render_context, RenderUpdate_pfn update_callbac
     }
     
     return TRUE;
-}
-
-
-void beginRendering(RenderCmd *cmd, u32 color_count, u32 *color_ids, u32 depth_id) {
-    u32 res_x = 0;
-    u32 res_y = 0;
-
-    /* COLOR TARGETS */ {
-        cmd->color_attachment_count = color_count;
-        for(u32 i = 0; i < color_count; i++) {
-            /* if screen color target */
-            if(color_ids[i] == RENDER_ATTACHMENT_SCREEN_COLOR_ID) {
-                cmd->color_attachments[i] = (VkRenderingAttachmentInfoKHR) {
-                    .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
-                    .imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL_KHR,
-                    .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-                    .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-                    .imageView = cmd->screen_color_view
-                };
-                res_x = MAX(res_x, cmd->render_context->render_settings.extent.width);
-                res_y = MAX(res_y, cmd->render_context->render_settings.extent.height);
-                continue;
-            }
-        }
-    }
-
-    /* DEPTH TARGET */ {
-        cmd->use_depth_atachment = FALSE;
-        if(depth_id == RENDER_ATTACHMENT_SCREEN_DEPTH_ID) {
-            cmd->depth_attachment = (VkRenderingAttachmentInfoKHR) {
-                .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
-                .clearValue = (VkClearValue) {
-                    .depthStencil = (VkClearDepthStencilValue) {
-                        .depth = 1.0
-                    }
-                },
-                .imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL_KHR,
-                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-                .imageView = cmd->screen_depth_view
-            };
-            cmd->use_depth_atachment = TRUE;
-            res_x = MAX(res_x, cmd->render_context->render_settings.extent.width);
-            res_y = MAX(res_y, cmd->render_context->render_settings.extent.height);
-        }
-    }
-
-    /* put attchemnt info into that struct */
-    const VkRenderingInfoKHR rendering_info = {
-        .sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
-        .colorAttachmentCount = cmd->color_attachment_count,
-        .pColorAttachments = cmd->color_attachments,
-        .layerCount = 1,
-        .pDepthAttachment = cmd->use_depth_atachment ? &cmd->depth_attachment : NULL,
-        .renderArea = (VkRect2D) {
-            .offset = {0, 0},
-            .extent = (VkExtent2D) {res_x, res_y}
-        }
-    };
-    const VkViewport viewport = {
-        .x = 0,
-        .y = 0,
-        .minDepth = 0.0,
-        .maxDepth = 1.0,
-        .width = (f32)res_x,
-        .height = (f32)res_y
-    };
-    /* begin rendering KHR call */
-    cmd->render_context->vulkan_context->cmd_begin_rendering(cmd->command_buffer, &rendering_info);
-    vkCmdSetViewport(cmd->command_buffer, 0, 1, &viewport);
-    vkCmdSetScissor(cmd->command_buffer, 0, 1, &rendering_info.renderArea);
-}
-
-void endRendering(RenderCmd *cmd) {
-    cmd->render_context->vulkan_context->cmd_end_rendering(cmd->command_buffer);
-    cmd->color_attachment_count = 0;
-    cmd->use_depth_atachment = FALSE;
-}
-
-void drawProcedural(RenderCmd *cmd, u32 program_id, u32 vertex_count, u32 instance_count) {
-    const RenderContext *render_context = cmd->render_context;
-
-    ShaderProgram *last_program = cmd->last_shader_program;
-    ShaderProgram *new_program = &render_context->shader_programs.shader_programs[program_id];
-    /* if pipeline changed, bind new pipeline */
-    if(last_program != new_program) {
-        vkCmdBindPipeline(cmd->command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, new_program->pipeline);
-        cmd->last_shader_program = new_program;
-    }
-    /* draw call */
-    vkCmdDraw(cmd->command_buffer, vertex_count, instance_count, 0 , 0);
-}
-
-void drawMesh(RenderCmd *cmd, u32 program_id, u32 mesh_id, u32 instance_count) {
-    const RenderContext *render_context = cmd->render_context;
-
-    ShaderProgram *last_program = cmd->last_shader_program;
-    ShaderProgram *new_program = &render_context->shader_programs.shader_programs[program_id];
-    /* if pipeline changed, bind new pipeline */
-    if(last_program != new_program) {
-        vkCmdBindPipeline(cmd->command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, new_program->pipeline);
-        cmd->last_shader_program = new_program;
-    }
-
-    RenderMesh *last_mesh = cmd->last_render_mesh;
-    RenderMesh *new_mesh = &render_context->render_meshes.render_meshes[mesh_id];
-    /* if mesh chenaged, bind new mesh */
-    if(last_mesh != new_mesh) {
-        vkCmdBindVertexBuffers(cmd->command_buffer, 0, 1, &new_mesh->vertex_buffer, &(VkDeviceSize){0});
-        vkCmdBindIndexBuffer(cmd->command_buffer, new_mesh->index_buffer, 0, VK_INDEX_TYPE_UINT16);
-        cmd->last_render_mesh = new_mesh;
-    }
-    /* draw call */
-    vkCmdDrawIndexed(cmd->command_buffer, new_mesh->index_count, instance_count, 0, 0, 0);
 }

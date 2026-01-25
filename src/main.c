@@ -29,16 +29,21 @@ void msgCallback(i32 code, const String *msg) {
 }
 
 static Arena s_context_arena = (Arena){0};
-
 void *allocateContext(u64 size, u64 aligment) {
     return allocateArena(&s_context_arena, size, aligment);
 }
+
 
 typedef enum {
     SHADER_PROGRAM_TRIANGLE = 0,
     SHADER_PROGRAM_DEFAULT = 1,
     SHADER_PROGRAM_COUNT
 } ShaderPorgrams;
+
+typedef enum {
+    MESH_SHITY_QUAD = 0,
+    MESH_SHITY_QUAD_COUNT
+} Meshes;
 
 const ShaderProgramInfo c_shader_programs[] = {
     [SHADER_PROGRAM_TRIANGLE] = (ShaderProgramInfo) {
@@ -52,23 +57,18 @@ const ShaderProgramInfo c_shader_programs[] = {
     }
 };
 
-
-typedef enum {
-    MESH_SHITY_QUAD = 0,
-    MESH_SHITY_QUAD_COUNT
-} Meshes;
-
 const MeshInfo c_mesh_infos[] = {
     [MESH_SHITY_QUAD] = (MeshInfo) {
         .file = CONST_STRING("out/data/shity_quad_v1.model")
     }
 };
 
+
 void updateCallback(UpdateInfo *info, RenderCmd *render_cmd) {
-    beginRendering(render_cmd, 1, (u32[]){RENDER_ATTACHMENT_SCREEN_COLOR_ID}, RENDER_ATTACHMENT_SCREEN_DEPTH_ID); 
-    drawProcedural(render_cmd, SHADER_PROGRAM_TRIANGLE, 18, 1);
-    drawMesh(render_cmd, SHADER_PROGRAM_DEFAULT, MESH_SHITY_QUAD, 1);
-    endRendering(render_cmd);
+    cmdBeginRendering(render_cmd, 1, (u32[]){RENDER_ATTACHMENT_SCREEN_COLOR_ID}, RENDER_ATTACHMENT_SCREEN_DEPTH_ID); 
+    cmdDrawProcedural(render_cmd, SHADER_PROGRAM_TRIANGLE, 18, 1);
+    cmdDrawMesh(render_cmd, SHADER_PROGRAM_DEFAULT, MESH_SHITY_QUAD, 1);
+    cmdEndRendering(render_cmd);
 }
 
 i32 main(i32 argc, char **argv) {
