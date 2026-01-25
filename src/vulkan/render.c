@@ -267,7 +267,7 @@ VkShaderModule createShaderModule(VkDevice device, const String *file, MsgCallba
 
 VkPipeline createGraphicsPipeline(
     VkDevice device, VkShaderModule vertex_shader, VkShaderModule fragment_shader, VkPipelineLayout pipeline_layout, 
-    const VkFormat *color_formats, u32 color_format_count, VkFormat depth_format
+    const VkFormat *color_formats, u32 color_format_count, VkFormat depth_format, ShaderProgramFlags flags
 ) {
     VkPipelineShaderStageCreateInfo shader_stages[] = {
         (VkPipelineShaderStageCreateInfo) {
@@ -291,29 +291,8 @@ VkPipeline createGraphicsPipeline(
         .pDynamicStates = (const VkDynamicState[]){VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR}
     };
 
-    /* vertex input */
-    VkVertexInputAttributeDescription vertex_attributes[] = {
-        (VkVertexInputAttributeDescription) {
-            .binding = 0,
-            .format = VK_FORMAT_R32G32B32_SFLOAT,
-            .location = 0,
-            .offset = offsetof(Vertex, position)
-        },
-        (VkVertexInputAttributeDescription) {
-            .binding = 0,
-            .format = VK_FORMAT_R32G32B32_SFLOAT,
-            .location = 1,
-            .offset = offsetof(Vertex, normal)
-        },
-        (VkVertexInputAttributeDescription) {
-            .binding = 0,
-            .format = VK_FORMAT_R32G32_SFLOAT,
-            .location = 2,
-            .offset = offsetof(Vertex, uv)
-        }
-    };
-
-    VkVertexInputBindingDescription vertex_bindings[] = {
+    u32 vertex_binding_count = 0;
+    VkVertexInputBindingDescription vertex_bindings[1] = {
         (VkVertexInputBindingDescription) {
             .binding = 0,
             .stride = sizeof(Vertex),
@@ -321,10 +300,41 @@ VkPipeline createGraphicsPipeline(
         }
     };
 
+    u32 vertex_attribute_count = 0;
+    VkVertexInputAttributeDescription vertex_attributes[3] = {0};
+
+    if(flags & SHADER_PRORGAM_FLAG_USE_VERTEX_POSITION) {
+        vertex_binding_count = 1;
+        vertex_attributes[vertex_attribute_count++] = (VkVertexInputAttributeDescription) {
+            .binding = 0,
+            .location = 0,
+            .format = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset = 0
+        };
+    }
+    if(flags & SHADER_PRORGAM_FLAG_USE_VERTEX_NORMAL) {
+        vertex_binding_count = 1;
+        vertex_attributes[vertex_attribute_count++] = (VkVertexInputAttributeDescription) {
+            .binding = 0,
+            .location = 1,
+            .format = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset = 16
+        };
+    }
+    if(flags & SHADER_PRORGAM_FLAG_USE_VERTEX_UV) {
+        vertex_binding_count = 1;
+        vertex_attributes[vertex_attribute_count++] = (VkVertexInputAttributeDescription) {
+            .binding = 0,
+            .location = 2,
+            .format = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset = 32
+        };
+    }
+
     VkPipelineVertexInputStateCreateInfo vertex_input_state = (VkPipelineVertexInputStateCreateInfo) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-        .vertexAttributeDescriptionCount = ARRAY_SIZE(vertex_attributes),
-        .vertexBindingDescriptionCount = ARRAY_SIZE(vertex_bindings),
+        .vertexAttributeDescriptionCount = vertex_binding_count,
+        .vertexBindingDescriptionCount = vertex_attribute_count,
         .pVertexAttributeDescriptions = vertex_attributes,
         .pVertexBindingDescriptions = vertex_bindings
     };
@@ -490,7 +500,7 @@ b32 createShaderPrograms(RenderContext *render_context, u32 program_count, const
             /* create pipeline */
             shader_programs[i].pipeline = createGraphicsPipeline(
                 vulkan_context->device, shader_programs[i].vertex_shader, shader_programs[i].fragment_shader, programs->pipeline_layout,
-                &render_context->render_settings.color_format, 1, render_context->render_settings.depth_format
+                &render_context->render_settings.color_format, 1, render_context->render_settings.depth_format, program_infos[i].flags
             );
             if(!shader_programs[i].pipeline) {
                 stringPattern(
@@ -501,6 +511,7 @@ b32 createShaderPrograms(RenderContext *render_context, u32 program_count, const
                 MSG_ERROR(render_context->msg_callback, &log_str);
                 return FALSE;
             }
+
             continue;
         }
         /* if compute */
@@ -565,8 +576,8 @@ b32 createRawMesh(const String *file, MsgCallback_pfn msg_callback, Buffer *read
         typedef u16 IndexV1;
 
         /* get vertex and index count */
-        u32 vertex_count = *(u32 *)((u8 *)read_buffer->buffer + 4);
-        u32 index_count = *(u32 *)((u8 *)read_buffer->buffer + 8);
+        const u32 vertex_count = *(u32 *)((u8 *)read_buffer->buffer + 4);
+        const u32 index_count = *(u32 *)((u8 *)read_buffer->buffer + 8);
         if(vertex_count == 0 || index_count == 0) {
             MSG_ERROR(msg_callback, &TRACED_STR("mesh file contain 0 length arrays"));
             return FALSE;
@@ -599,7 +610,8 @@ b32 createRawMesh(const String *file, MsgCallback_pfn msg_callback, Buffer *read
                     .position = {
                         vertices_v1[i].position[0],
                         vertices_v1[i].position[1],
-                        vertices_v1[i].position[2]
+                        vertices_v1[i].position[2],
+                        1.0
                     }
                 };
             }
@@ -722,7 +734,10 @@ b32 createMeshBuffers_DescreteModel(
         }
 
         /* DEVICE BUFFERS */ {
-            render_meshes[i] = (RenderMesh){0};
+            render_meshes[i] = (RenderMesh){
+                .vertex_count = raw_meshes[i].vertex_count,
+                .index_count = raw_meshes[i].index_count
+            };
             const VkBufferCreateInfo vertex_buffer_info = {
                 .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                 .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,

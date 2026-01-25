@@ -28,6 +28,6 @@ Interpolators vertexMain(uint vertex_id : SV_VERTEXID) {
 Pixel fragmentMain(Interpolators input) {
     Pixel output = (Pixel)0;
     output.color = lerp(float4(0.05, 0.9, 0.1, 1.0), float4(0.9, 0.05, 0.02, 1.0), smoothstep(0.10, 0.15, abs(input.position_raw.x)));
-    output.depth = 0.5;
+    output.depth = 1.0;
     return output;
 }

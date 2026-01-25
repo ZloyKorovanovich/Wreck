@@ -36,6 +36,7 @@ void *allocateContext(u64 size, u64 aligment) {
 
 typedef enum {
     SHADER_PROGRAM_TRIANGLE = 0,
+    SHADER_PROGRAM_DEFAULT = 1,
     SHADER_PROGRAM_COUNT
 } ShaderPorgrams;
 
@@ -43,6 +44,11 @@ const ShaderProgramInfo c_shader_programs[] = {
     [SHADER_PROGRAM_TRIANGLE] = (ShaderProgramInfo) {
         .vertex_shader = CONST_STRING("out/data/triangle_v.spv"),
         .fragment_shader = CONST_STRING("out/data/triangle_f.spv")
+    },
+    [SHADER_PROGRAM_DEFAULT] = (ShaderProgramInfo) {
+        .flags = SHADER_PRORGAM_FLAG_USE_VERTEX_POSITION,
+        .vertex_shader = CONST_STRING("out/data/default_v.spv"),
+        .fragment_shader = CONST_STRING("out/data/default_f.spv"),
     }
 };
 
@@ -61,6 +67,7 @@ const MeshInfo c_mesh_infos[] = {
 void updateCallback(UpdateInfo *info, RenderCmd *render_cmd) {
     beginRendering(render_cmd, 1, (u32[]){RENDER_ATTACHMENT_SCREEN_COLOR_ID}, RENDER_ATTACHMENT_SCREEN_DEPTH_ID); 
     drawProcedural(render_cmd, SHADER_PROGRAM_TRIANGLE, 18, 1);
+    drawMesh(render_cmd, SHADER_PROGRAM_DEFAULT, MESH_SHITY_QUAD, 1);
     endRendering(render_cmd);
 }
 

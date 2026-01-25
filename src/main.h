@@ -62,7 +62,15 @@ typedef struct {
 
 typedef void (*RenderUpdate_pfn) (UpdateInfo *info, RenderCmd *render_cmd);
 
+typedef enum {
+    SHADER_PROGRAM_FLAGS_NONE = 0,
+    SHADER_PRORGAM_FLAG_USE_VERTEX_POSITION = 0x1,
+    SHADER_PRORGAM_FLAG_USE_VERTEX_NORMAL = 0x2,
+    SHADER_PRORGAM_FLAG_USE_VERTEX_UV = 0x4
+} ShaderProgramFlags;
+
 typedef struct {
+    ShaderProgramFlags flags;
     const String vertex_shader; /* set if graphics */
     const String fragment_shader; /* set if graphics */
     const String compute_shader; /* set if compute */
@@ -93,5 +101,6 @@ b32 runRenderLoop(RenderContext *render_context, RenderUpdate_pfn update_callbac
 void beginRendering(RenderCmd *cmd, u32 color_count, u32 *color_ids, u32 depth_id);
 void endRendering(RenderCmd *cmd);
 void drawProcedural(RenderCmd *cmd, u32 program_id, u32 vertex_count, u32 instance_count);
+void drawMesh(RenderCmd *cmd, u32 program_id, u32 mesh_id, u32 instance_count);
 
 #endif

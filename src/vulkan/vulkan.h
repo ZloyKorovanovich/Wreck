@@ -129,9 +129,9 @@ typedef struct {
 
 
 typedef struct {
-    f32 position[3];
-    f32 normal[3];
-    f32 uv[2];
+    f32 position[4];
+    f32 normal[4];
+    f32 uv[4];
 } Vertex;
 
 typedef struct {
