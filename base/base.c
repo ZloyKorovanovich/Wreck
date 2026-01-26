@@ -255,11 +255,80 @@ b32 stringAddU64(String *dst, u64 num) {
 }
 
 b32 stringAddI64(String *dst, i64 num) {
-    return FALSE;
+    if(num == 0) {
+        if(dst->size + 1 > dst->capacity) {
+            return FALSE;
+        }
+        dst->string[dst->size++] = '0';
+        dst->string[dst->size] = '\0';
+        
+    } else {
+        b32 is_negative = (num < 0) ? TRUE : FALSE;
+
+        u64 abs_num = (num < 0) ? (u64)(-num) : (u64)num; 
+        u64 reverse_abs = 0;
+        u32 digits = 0;
+        while(abs_num){
+            reverse_abs = reverse_abs * 10 + abs_num % 10;
+            abs_num = abs_num / 10;
+            digits++;
+        }
+        if(is_negative) {
+            dst->string[dst->size++] = '-';
+        }
+        for(;digits; digits--) {
+             dst->string[dst->size++] = reverse_abs % 10 + 48;
+             reverse_abs /= 10;
+        }
+        dst->string[dst->size] = '\0';
+    }
+    return TRUE;
 }
 
-b32 stringAddf64(String *dst, u64 num) {
-    return FALSE;
+b32 stringAddF64(String *dst, f64 num) {
+    f64Bits bits = (f64Bits){.real = num};
+    if(dst->size >= dst->capacity) {
+        return FALSE;
+    }
+    if(bits.bits == F64_PZERO) {
+        return stringAddCstring(dst, "+0.0");
+    }
+    if(bits.bits == F64_NZERO) {
+        return stringAddCstring(dst, "-0.0");
+    }
+    if(bits.bits == F64_PINF) {
+        return stringAddCstring(dst, "+inf");
+    }
+    if(bits.bits == F64_NINF) {
+        return stringAddCstring(dst, "-inf");
+    }
+    if(bits.bits == F64_QNAN) {
+        return stringAddCstring(dst, "qNaN");
+    }
+    if(bits.bits == F64_SNAN) {
+        return stringAddCstring(dst, "sNaN");
+    }
+
+    i64 int_part = (i64)num;
+    u64 real_part = (u64)(((num < 0) ? -(num - (f64)(int_part)) : (num - (f64)(int_part))) * 1000000.0);
+
+    if(!stringAddI64(dst, int_part)) {
+        return FALSE;
+    }
+    if(!stringAddChar(dst, '.')) {
+        return FALSE;
+    }
+    if(dst->size + 6 >= dst->capacity) {
+        return FALSE;
+    }
+    u32 j = dst->size + 5;
+    dst->size += 6;
+    for(u32 i = 0; i < 6; i++) {
+        dst->string[j] = real_part % 10 + 48;
+        real_part /= 10;
+        j--;
+    }
+    return TRUE;
 }
 
 
@@ -292,6 +361,8 @@ b32 stringPattern(const String *pattern, const void** elements, String *out_stri
     u32 element_iterator = 0;
     for(u32 i = 0; i < pattern->size; i++) {
         if(pattern->string[i] == '%' && pattern->string[i + 1] != '%') {
+            
+            /* STRINGS */
             if(pattern->string[i + 1] == 's') {
                 if(!stringAddString(out_string, (const String*)elements[element_iterator++])) {
                     return FALSE;
@@ -304,12 +375,73 @@ b32 stringPattern(const String *pattern, const void** elements, String *out_stri
                 }
                 i += 1;
             }
-            if(pattern->string[i + 1] == 'u') {
+
+            /* UNSIGNED */
+            if(pattern->string[i + 1] == 'u' && pattern->string[i + 2] == '6' && pattern->string[i + 3] == '4') {
                 if(!stringAddU64(out_string, *((const u64*)elements[element_iterator++]))) {
                     return FALSE;
                 }
-                i += 1;
+                i += 3;
             }
+            if(pattern->string[i + 1] == 'u' && pattern->string[i + 2] == '3' && pattern->string[i + 3] == '2') {
+                if(!stringAddU64(out_string, *((const u32*)elements[element_iterator++]))) {
+                    return FALSE;
+                }
+                i += 3;
+            }
+            if(pattern->string[i + 1] == 'u' && pattern->string[i + 2] == '1' && pattern->string[i + 3] == '6') {
+                if(!stringAddU64(out_string, *((const u16*)elements[element_iterator++]))) {
+                    return FALSE;
+                }
+                i += 3;
+            }
+            if(pattern->string[i + 1] == 'u' && pattern->string[i + 2] == '8') {
+                if(!stringAddU64(out_string, *((const u8*)elements[element_iterator++]))) {
+                    return FALSE;
+                }
+                i += 2;
+            }
+
+            /* SIGNED */
+            if(pattern->string[i + 1] == 'i' && pattern->string[i + 2] == '6' && pattern->string[i + 3] == '4') {
+                if(!stringAddI64(out_string, *((const i64*)elements[element_iterator++]))) {
+                    return FALSE;
+                }
+                i += 3;
+            }
+            if(pattern->string[i + 1] == 'i' && pattern->string[i + 2] == '3' && pattern->string[i + 3] == '2') {
+                if(!stringAddI64(out_string, *((const i32*)elements[element_iterator++]))) {
+                    return FALSE;
+                }
+                i += 3;
+            }
+            if(pattern->string[i + 1] == 'i' && pattern->string[i + 2] == '1' && pattern->string[i + 3] == '6') {
+                if(!stringAddI64(out_string, *((const i16*)elements[element_iterator++]))) {
+                    return FALSE;
+                }
+                i += 3;
+            }
+            if(pattern->string[i + 1] == 'i' && pattern->string[i + 2] == '8') {
+                if(!stringAddI64(out_string, *((const i8*)elements[element_iterator++]))) {
+                    return FALSE;
+                }
+                i += 2;
+            }
+
+            /* FLOATING POINT */
+            if(pattern->string[i + 1] == 'f' && pattern->string[i + 2] == '6' && pattern->string[i + 3] == '4') {
+                if(!stringAddF64(out_string, *((const f64*)elements[element_iterator++]))) {
+                    return FALSE;
+                }
+                i += 3;
+            }
+            if(pattern->string[i + 1] == 'f' && pattern->string[i + 2] == '3' && pattern->string[i + 3] == '2') {
+                if(!stringAddF64(out_string, *((const f32*)elements[element_iterator++]))) {
+                    return FALSE;
+                }
+                i += 3;
+            }
+
             continue;
         }
         if(pattern->string[i] == '%' && pattern->string[i + 1] == '%') i++;

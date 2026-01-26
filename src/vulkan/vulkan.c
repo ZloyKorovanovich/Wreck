@@ -175,10 +175,7 @@ const DeviceInfo *compareDevices(const DeviceInfo *a, const DeviceInfo *b) {
   ======================================================================*/
 
 VulkanContext *createVulkanContext(Allocate_pfn context_allocate, const VulkanContextInfo *info) {
-    String msg_string = (String) {
-        .string = (char[256]){0},
-        .capacity = 256
-    };
+    String msg_string = STACK_STR(256);
 
     /* VALIDATE INFO */ {
         /* if info it self is valid data */
@@ -192,13 +189,10 @@ VulkanContext *createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
         }
         /* resolution should not be 0 0 */
         if(info->resolution_x == 0 || info->resolution_y == 0) {
-            /* %u is 64 bit value so need some transformation */
-            const u64 res_x = info->resolution_x;
-            const u64 res_y = info->resolution_y;
             /* combine data into string */
             stringPattern(
-                &TRACED_STR("VulkanContextInfo param resolution invalid x: %u y: %u "), 
-                (const void *[]){&res_x, &res_y}, &msg_string
+                &TRACED_STR("VulkanContextInfo param resolution invalid x: %u32 y: %u32 "), 
+                (const void *[]){&info->resolution_x, &info->resolution_y}, &msg_string
             );
             /* call error message */
             MSG_ERROR(info->msg_callback, &msg_string);
@@ -241,9 +235,11 @@ VulkanContext *createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
         }
 
         /* LOG */ {
-            const u64 res_x = info->resolution_x;
-            const u64 res_y = info->resolution_y;
-            stringPattern(&CONST_STRING("created glfw window { name: \"%s\" x: %u y: %u }"), (const void *[]){&info->name, &res_x, &res_y}, &msg_string);
+            stringPattern(
+                &CONST_STRING("created glfw window { name: \"%s\" x: %u32 y: %u32 }"), 
+                (const void *[]){&info->name, &info->resolution_x, &info->resolution_y}, 
+                &msg_string
+            );
             MSG_LOG(context->msg_callback, &msg_string);
         }
     }
@@ -482,14 +478,12 @@ VulkanContext *createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
         }
 
         /* LOG BEST DEVICE INFO */ {
-            const u64 device_id = best_device_info->device_id;
-            const u64 device_model = best_device_info->device_model;
             const String yes = CONST_STRING("YES");
             const String no = CONST_STRING("NO");
             stringPattern(
-                &CONST_STRING("selected device { name: \"%c\" id: %u model: %u render: %s compute: %s transfer: %s }"),
+                &CONST_STRING("selected device { name: \"%c\" id: %u32 model: %u32 render: %s compute: %s transfer: %s }"),
                 (const void *[]) {
-                    best_device_info->name, &device_id, &device_model, 
+                    best_device_info->name, &best_device_info->device_id, &best_device_info->device_model, 
                     (best_device_info->render_queue_id == U32_MAX) ? &no : &yes,
                     (best_device_info->compute_queue_id == U32_MAX) ? &no : &yes,
                     (best_device_info->transfer_queue_id == U32_MAX) ? &no : &yes

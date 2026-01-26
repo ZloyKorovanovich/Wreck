@@ -74,21 +74,38 @@ void stringPatternTest(void) {
         .capacity = 512
     };
 
-    String some_shit = CONST_STRING("who the fuck are you");
+    String val_string = CONST_STRING("labubu");
+    const char* val_cstring = "hello world";
 
-    u64 test_val = 10;
-    u64 other_val = 2314;
+    u64 val_u64 = 10;
+    u32 val_u32 = 12314;
+    u16 val_u16 = 636;
+    u8 val_u8 = 214;
 
-    if(!stringPattern(&CONST_STRING("this is pattern %u %c world %s %u\n"), (const void*[]){&test_val, "hello", &some_shit, &other_val}, &print_string)) {
-        printConsole(&CONST_STRING("NO WAY!\n"));
+    i64 val_i64 = -2947;
+    i32 val_i32 = 21312;
+    i16 val_i16 = 124;
+    i8 val_i8 = -98;
+
+    f64 val_f64 = 2.0812;
+    f32 val_f32 = 2131.5;
+
+    if(!stringPattern(
+        &CONST_STRING("pattern string: %s %c %u64 %u32 %u16 %u8 %i64 %i32 %i16 %i8 %f64 %f32\n"), 
+        (const void*[]){
+            &val_string, val_cstring,
+            &val_u64, &val_u32, &val_u16, &val_u8,
+            &val_i64, &val_i32, &val_i16, &val_i8,
+            &val_f64, &val_f32
+        }, &print_string
+    )) {
+        printConsole(&CONST_STRING("pattern string fail\n"));
     }
-
-    arenaTest();
     printConsole(&print_string);
 }
 
 i32 main(i32 argc, char **argv) {
-
+    arenaTest();
     stringPatternTest();
 
     return 0;

@@ -20,6 +20,16 @@ typedef unsigned long long u64;
 typedef float f32;
 typedef double f64;
 
+typedef union {
+  f32 real;
+  u32 bits;
+} f32Bits;
+
+typedef union {
+  f64 real;
+  u64 bits;
+} f64Bits;
+
 typedef unsigned char byte;
 typedef unsigned short word;
 typedef unsigned dword;
@@ -57,6 +67,18 @@ typedef unsigned b32;
 #define U16_MAX (0xffff)
 #define U32_MAX (0xffffffff)
 #define U64_MAX (0xffffffffffffffff)
+
+#define F32_PINF (0x7f800000)
+#define F32_NINF (0xff800000)
+#define F32_QNAN (0x7fc00000)
+#define F32_SNAN (0x7f800001)
+
+#define F64_PZERO (0x0000000000000000)
+#define F64_NZERO (0x8000000000000000)
+#define F64_PINF (0x7ff0000000000000)
+#define F64_NINF (0xfff0000000000000)
+#define F64_QNAN (0x7ff8000000000000)
+#define F64_SNAN (0x7ff8000000000001)
 
 /*======================================================================
     OPERATIONS
@@ -156,6 +178,7 @@ typedef struct {
 
 #define CONST_STRING(cstr) ((String){(char *)cstr, sizeof(cstr)})
 #define IS_EMPTY_STR(str) (str.size == 0)
+#define STACK_STR(size) ((String){.string = (char[size]){0}, .capacity = size})
 
 void stringZero(String *str);
 
@@ -165,7 +188,7 @@ b32 stringAddCstring(String *dst, const char *src);
 b32 stringAddChar(String *dst, char c);
 b32 stringAddU64(String *dst, u64 num);
 b32 stringAddI64(String *dst, i64 num);
-b32 stringAddf64(String *dst, u64 num);
+b32 stringAddF64(String *dst, f64 num);
 
 i64 stirngToI64(const String *src);
 u64 stirngToU64(const String *src);
