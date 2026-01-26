@@ -367,6 +367,9 @@ VkPipeline createGraphicsPipeline(
         .depthBiasClamp = 0.0f,
         .depthBiasSlopeFactor = 0.0f
     };
+    rasterization_state.polygonMode = (flags & SHADER_PROGRAM_FLAG_LINE_MODE) ? VK_POLYGON_MODE_LINE : rasterization_state.polygonMode;
+    rasterization_state.polygonMode = (flags & SHADER_PROGRAM_FLAG_POINT_MODE) ? VK_POLYGON_MODE_POINT : rasterization_state.polygonMode;
+
     VkPipelineMultisampleStateCreateInfo multisample_state = (VkPipelineMultisampleStateCreateInfo) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
         .sampleShadingEnable = FALSE,
@@ -581,6 +584,7 @@ b32 createRawMesh(const String *file, MsgCallback_pfn msg_callback, Buffer *read
             MSG_ERROR(msg_callback, &TRACED_STR("failed to reallocate read buffer for larger mesh file"));
             return FALSE;
         }
+        read_buffer->size = file_size;
         /* read file to buffer 2 attempt */
         if(fileToBuffer(file, read_buffer) != file_size) {
             MSG_ERROR(msg_callback, &TRACED_STR("failed to read mesh file to buffer after reallocation"));
@@ -720,7 +724,7 @@ b32 createMeshBuffers_DescreteModel(
 
         /* read buffer should be allocated last on stack, otherwise reallocation will break memory continuity */
         read_buffer = (Buffer){
-            .buffer = allocateStack(init_stack, 1024 * 64, 0),
+            .buffer = allocateStack(init_stack, 1024 * 64, 16),
             .size = 1024 * 64
         };
         if(!read_buffer.buffer) {
@@ -749,7 +753,7 @@ b32 createMeshBuffers_DescreteModel(
     for(u32 i = 0; i < mesh_count; i++) {
         /* read file to raw mesh */
         if(!createRawMesh(&mesh_infos[i].file, render_context->msg_callback, &read_buffer, init_stack, &mesh_arena, &raw_meshes[i])) {
-            stringPattern(&TRACED_STR("failed to create raw mesh from file: %s"), (const void *[]){&mesh_infos[i].file}, &log_str);
+            stringPattern(&TRACED_STR("failed to create raw mesh from file: \"%s\""), (const void *[]){&mesh_infos[i].file}, &log_str);
             MSG_ERROR(render_context->msg_callback, &log_str);
             return FALSE;
         }
@@ -776,12 +780,12 @@ b32 createMeshBuffers_DescreteModel(
                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE
             };
             if(vkCreateBuffer(vulkan_context->device, &vertex_buffer_info, NULL, &render_meshes[i].vertex_buffer) != VK_SUCCESS) {
-                stringPattern(&TRACED_STR("failed to create vertex buffer file: %s"), (const void *[]){&mesh_infos[i].file}, &log_str);
+                stringPattern(&TRACED_STR("failed to create vertex buffer file: \"%s\""), (const void *[]){&mesh_infos[i].file}, &log_str);
                 MSG_ERROR(render_context->msg_callback, &log_str);
                 return FALSE;
             }
             if(vkCreateBuffer(vulkan_context->device, &index_buffer_info, NULL, &render_meshes[i].index_buffer) != VK_SUCCESS) {
-                stringPattern(&TRACED_STR("failed to create index buffer file: %s"), (const void *[]){&mesh_infos[i].file}, &log_str);
+                stringPattern(&TRACED_STR("failed to create index buffer file: \"%s\""), (const void *[]){&mesh_infos[i].file}, &log_str);
                 MSG_ERROR(render_context->msg_callback, &log_str);
                 return FALSE;
             }
@@ -821,7 +825,7 @@ b32 createMeshBuffers_DescreteModel(
                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE
             };
             if(vkCreateBuffer(vulkan_context->device, &host_buffer_info, NULL, &host_mesh_buffers[i]) != VK_SUCCESS) {
-                stringPattern(&TRACED_STR("failed to create host mesh buffer file: %s"), (const void *[]){&mesh_infos[i].file}, &log_str);
+                stringPattern(&TRACED_STR("failed to create host mesh buffer file: \"%s\""), (const void *[]){&mesh_infos[i].file}, &log_str);
                 MSG_ERROR(render_context->msg_callback, &log_str);
                 return FALSE;
             } 

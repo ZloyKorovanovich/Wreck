@@ -15,7 +15,7 @@ const f32 positions[][3] = {
 int main(int argc, char **argv) {
     Buffer write_buffer = {
         .buffer = (char[16 + sizeof(positions) + sizeof(indices)]){0},
-        .size = 16 + ARRAY_SIZE(positions) + ARRAY_SIZE(indices)
+        .size = 16 + sizeof(positions) + sizeof(indices)
     };
 
     *((u32 *)write_buffer.buffer) = 1;
@@ -40,21 +40,35 @@ int main(int argc, char **argv) {
     }
 
     for(u32 i = 0; i < ARRAY_SIZE(indices); i++) {
-        u16* index = (u16 *)((u8*)write_buffer.buffer + 16 + ARRAY_SIZE(positions) + sizeof(u16) * i);
+        u16* index = (u16 *)((u8*)write_buffer.buffer + 16 + sizeof(positions) + sizeof(u16) * i);
         *index = indices[i];
     }
 
     if(!bufferToFile(&CONST_STRING(argv[1]), &write_buffer)) {
-        printConsole(&CONST_STRING("failed to write buffer to file"));
+        printConsole(&CONST_STRING("failed to write buffer to file\n"));
     }
 
-    if(!fileToBuffer(&CONST_STRING(argv[1]), &write_buffer)) {
-        printConsole(&CONST_STRING("failed to read from file"));
+    for(u32 i = 0; i < write_buffer.size; i++) {
+        ((u8*)write_buffer.buffer)[i] = 0;
     }
+
+    u64 size = 0;
+    if(!(size = fileToBuffer(&CONST_STRING(argv[1]), &write_buffer))) {
+        printConsole(&CONST_STRING("failed to read from file\n"));
+    }
+
+    stringPattern(&CONST_STRING("size: %u\n"), (const void *[]){&size}, &str);
+    printConsole(&str);
     
     version = (u64)*((u32 *)write_buffer.buffer);
     stringPattern(&CONST_STRING("read version: %u\n"), (const void *[]){&version}, &str);
     printConsole(&str);
+
+    for(u32 i = 0; i < ARRAY_SIZE(indices); i++) {
+        u64 index = *(u16 *)((u8*)write_buffer.buffer + 16 + sizeof(positions) + sizeof(u16) * i);
+        stringPattern(&CONST_STRING("index: %u\n"), (const void *[]){&index}, &str);
+        printConsole(&str);
+    }
 
     return 0;
 }

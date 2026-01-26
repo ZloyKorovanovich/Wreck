@@ -309,10 +309,16 @@ b32 stringAddF64(String *dst, f64 num) {
         return stringAddCstring(dst, "sNaN");
     }
 
-    i64 int_part = (i64)num;
+    b32 is_negative = (num < 0) ? TRUE : FALSE;
+    u64 int_part = is_negative ? (u64)(-num) : (u64)num;
     u64 real_part = (u64)(((num < 0) ? -(num - (f64)(int_part)) : (num - (f64)(int_part))) * 1000000.0);
 
-    if(!stringAddI64(dst, int_part)) {
+    if(is_negative) {
+        if(!stringAddChar(dst, '-')) {
+            return FALSE;
+        }
+    }
+    if(!stringAddU64(dst, int_part)) {
         return FALSE;
     }
     if(!stringAddChar(dst, '.')) {
@@ -332,16 +338,120 @@ b32 stringAddF64(String *dst, f64 num) {
 }
 
 
-i64 stirngToI64(const String *src) {
-    return 0;
+i64 stringToI64(const String *src) {
+    if(src->size == 0) {
+        return 0;
+    }
+
+    i64 num = 0;
+    b32 is_negative = (src->string[0] == '-') ? TRUE : FALSE;
+
+    i64 number_end = 0;
+    for(u32 i = is_negative ? 1 : 0; i < src->size; i++) {
+        if(src->string[i] < 48 || src->string[i] > 58) {
+            break;
+        }
+        number_end++;
+    }
+
+    if(number_end == 0) {
+        return 0;
+    }
+
+    number_end += is_negative ? 1 : 0;
+    i64 tens = 1;
+    /* get digits */
+    for(u32 i = number_end - 1; i >= (is_negative ? 1 : 0); i--) {
+        num += (src->string[i] - 48) * tens;
+        tens *= 10;
+        if(i == 0) {
+            break;
+        }
+    }
+    return is_negative ? -num : num;
 }
 
-u64 stirngToU64(const String *src) {
-    return 0;
+u64 stringToU64(const String *src) {
+    if(src->size == 0) {
+        return 0;
+    }
+
+    u64 num = 0;
+    u64 number_end = 0;
+    for(u32 i = 0; i < src->size; i++) {
+        if(src->string[i] < 48 || src->string[i] > 58) {
+            break;
+        }
+        number_end++;
+    }
+
+    if(number_end == 0) {
+        return 0;
+    }
+
+    u64 tens = 1;
+    /* get digits */
+    for(u32 i = number_end - 1; i >= 0; i--) {
+        num += (src->string[i] - 48) * tens;
+        tens *= 10;
+        if(i == 0) {
+            break;
+        }
+    }
+    return num;
 }
 
 f64 stringToF64(const String *src) {
-    return 0.0;
+    if(src->size == 0) {
+        return 0.0;
+    }
+
+    b32 is_negative = (src->string[0] == '-') ? TRUE : FALSE;
+    /* find special locations */
+    u64 num_dot = U64_MAX;
+    u64 num_begin = is_negative ? 1 : 0;
+    u64 num_end = src->size;
+    for(u32 i = num_begin; i < src->size; i++) {
+        if(src->string[i] == '.') {
+            if(num_dot == U64_MAX) {
+                num_dot = i;
+                continue;
+            }
+            num_end = i;
+            break;
+        }
+        if(src->string[i] < 48 || src->string[i] > 58) {
+            num_end = i;
+            break;
+        }
+    }
+
+    /* get integer part */
+    f64 num = 0.0;
+    u64 digits = 0;
+    u64 tens = 1;
+    for(u32 i = MIN(num_dot, num_end) - 1; i >= num_begin; i--) {
+        digits += (src->string[i] - 48) * tens;
+        tens *= 10;
+        if(i == num_begin) {
+            break;
+        }
+    }
+    num += (f64)digits;
+    /* if float part doesnt exist */
+    if(num_dot == U64_MAX) {
+        return is_negative ? -num : num;
+    }
+
+    /* get float part */
+    digits = 0;
+    tens = 1;
+    for(u32 i = num_end - 1; i > num_dot; i--) {
+        digits += (src->string[i] - 48) * tens;
+        tens *= 10;
+    }
+    num += ((f64)digits / (f64)(tens));
+    return is_negative ? -num : num;
 }
 
 
@@ -549,7 +659,7 @@ u64 fileToBuffer(const String *path, Buffer *buffer) {
 }
 
 b32 bufferToFile(const String *path, const Buffer *buffer) {
-    HANDLE file = CreateFile(path->string, GENERIC_WRITE, FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE file = CreateFile(path->string, GENERIC_WRITE, FILE_SHARE_WRITE, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if(file == INVALID_HANDLE_VALUE) {
         return FALSE;
     }

@@ -37,16 +37,20 @@ void *allocateContext(u64 size, u64 aligment) {
 typedef enum {
     SHADER_PROGRAM_TRIANGLE = 0,
     SHADER_PROGRAM_DEFAULT = 1,
+    SHADER_PROGRAM_BODY = 2,
+    SHADER_PROGRAM_EYE = 3,
     SHADER_PROGRAM_COUNT
 } ShaderPorgrams;
 
 typedef enum {
-    MESH_SHITY_QUAD = 0,
+    MESH_BODY = 0,
+    MESH_EYE = 1,
     MESH_SHITY_QUAD_COUNT
 } Meshes;
 
 const ShaderProgramInfo c_shader_programs[] = {
     [SHADER_PROGRAM_TRIANGLE] = (ShaderProgramInfo) {
+        .flags = SHADER_PROGRAM_FLAG_LINE_MODE,
         .vertex_shader = CONST_STRING("out/data/triangle_v.spv"),
         .fragment_shader = CONST_STRING("out/data/triangle_f.spv")
     },
@@ -54,12 +58,25 @@ const ShaderProgramInfo c_shader_programs[] = {
         .flags = SHADER_PRORGAM_FLAG_USE_VERTEX_POSITION,
         .vertex_shader = CONST_STRING("out/data/default_v.spv"),
         .fragment_shader = CONST_STRING("out/data/default_f.spv"),
+    },
+    [SHADER_PROGRAM_BODY] = (ShaderProgramInfo) {
+        .flags = SHADER_PRORGAM_FLAG_USE_VERTEX_POSITION | SHADER_PROGRAM_FLAG_POINT_MODE,
+        .vertex_shader = CONST_STRING("out/data/body_v.spv"),
+        .fragment_shader = CONST_STRING("out/data/body_f.spv")
+    },
+    [SHADER_PROGRAM_EYE] = (ShaderProgramInfo) {
+        .flags = SHADER_PRORGAM_FLAG_USE_VERTEX_POSITION,
+        .vertex_shader = CONST_STRING("out/data/eye_v.spv"),
+        .fragment_shader = CONST_STRING("out/data/eye_f.spv")
     }
 };
 
 const MeshInfo c_mesh_infos[] = {
-    [MESH_SHITY_QUAD] = (MeshInfo) {
-        .file = CONST_STRING("out/data/shity_quad_v1.model")
+    [MESH_BODY] = (MeshInfo) {
+        .file = CONST_STRING("out/data/body.model")
+    },
+    [MESH_EYE] = (MeshInfo) {
+        .file = CONST_STRING("out/data/eye.model")
     }
 };
 
@@ -67,7 +84,8 @@ const MeshInfo c_mesh_infos[] = {
 void updateCallback(UpdateInfo *info, RenderCmd *render_cmd) {
     cmdBeginRendering(render_cmd, 1, (u32[]){RENDER_ATTACHMENT_SCREEN_COLOR_ID}, RENDER_ATTACHMENT_SCREEN_DEPTH_ID); 
     cmdDrawProcedural(render_cmd, SHADER_PROGRAM_TRIANGLE, 18, 1);
-    cmdDrawMesh(render_cmd, SHADER_PROGRAM_DEFAULT, MESH_SHITY_QUAD, 1);
+    cmdDrawMesh(render_cmd, SHADER_PROGRAM_DEFAULT, MESH_BODY, 1);
+    cmdDrawMesh(render_cmd, SHADER_PROGRAM_DEFAULT, MESH_EYE, 1);
     cmdEndRendering(render_cmd);
 }
 

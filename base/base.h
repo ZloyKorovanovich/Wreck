@@ -99,7 +99,7 @@ typedef unsigned b32;
 
 #ifndef ARENA_CUSTOM_STATS
     #define ARENA_DEFAULT_VIRTUAL_SIZE (1024 * 1024 * 1024)
-    #define ARENA_DEFAULT_EXPANSION (1024 * 1024 * 4)
+    #define ARENA_DEFAULT_EXPANSION (1024 * 64)
 #endif
 #ifndef STACK_CUSTOM_STATS
     #define STACK_DEFAULT_VIRTUAL_SIZE (1024 * 1024 * 256)
@@ -176,7 +176,7 @@ typedef struct {
     u64 capacity;
 } String;
 
-#define CONST_STRING(cstr) ((String){(char *)cstr, sizeof(cstr)})
+#define CONST_STRING(cstr) ((String){(char *)cstr, sizeof(cstr) - 1})
 #define IS_EMPTY_STR(str) (str.size == 0)
 #define STACK_STR(size) ((String){.string = (char[size]){0}, .capacity = size})
 
@@ -190,8 +190,8 @@ b32 stringAddU64(String *dst, u64 num);
 b32 stringAddI64(String *dst, i64 num);
 b32 stringAddF64(String *dst, f64 num);
 
-i64 stirngToI64(const String *src);
-u64 stirngToU64(const String *src);
+i64 stringToI64(const String *src);
+u64 stringToU64(const String *src);
 f64 stringToF64(const String *src);
 
 /* used for moving up in directories */

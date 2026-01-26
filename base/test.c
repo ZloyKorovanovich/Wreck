@@ -10,7 +10,7 @@ void arenaTest(void) {
     printConsole(&CONST_STRING("BASE TEST!\n"));
 
     Arena arena = (Arena){0};
-    if(createArena(&arena, 0, 4096)) {
+    if(createArena(&arena, 4096, 4096)) {
         printConsole(&CONST_STRING("created arena\n"));
     } else {
         printConsole(&CONST_STRING("failed to create arena!\n"));
@@ -27,7 +27,7 @@ void arenaTest(void) {
     } else {
         printConsole(&CONST_STRING("SHIT 2!\n"));
     }
-    if(allocateArena(&arena, 1024, 4)) {
+    if(allocateArena(&arena, 1239281, 4)) {
         stringAddCstring(&string_buffer, "allocated arena 2 physical: ");
         stringAddU64(&string_buffer, arena.physical_size);
         stringAddCstring(&string_buffer, " virtual: ");
@@ -101,6 +101,21 @@ void stringPatternTest(void) {
     )) {
         printConsole(&CONST_STRING("pattern string fail\n"));
     }
+    printConsole(&print_string);
+
+    stringZero(&print_string);
+    stringAddI64(&print_string, stringToI64(&CONST_STRING("-231")));
+    stringAddChar(&print_string, '\n');
+    printConsole(&print_string);
+
+    stringZero(&print_string);
+    stringAddU64(&print_string, stringToU64(&CONST_STRING("2312")));
+    stringAddChar(&print_string, '\n');
+    printConsole(&print_string);
+
+    stringZero(&print_string);
+    stringAddF64(&print_string, stringToF64(&CONST_STRING("52312.931")));
+    stringAddChar(&print_string, '\n');
     printConsole(&print_string);
 }
 
