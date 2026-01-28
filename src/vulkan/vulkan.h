@@ -149,10 +149,9 @@ typedef struct {
 } Meshes;
 
 typedef struct {
-    VkBuffer *device_uniform_buffers;
-    VkBuffer *host_uniform_buffers;
-    VramRegion *host_buffer_regions;
-    u32 uniform_buffer_count;
+    VkBuffer global_device_buffer;
+    VkBuffer global_host_buffer;
+    VramRegion global_host_region;
 } Uniforms;
 
 /* context of render queue */
@@ -172,6 +171,9 @@ struct RenderContext {
     Vram images_device_vram;
     Vram mesh_device_vram;
     Vram uniform_device_vram;
+    
+    Vram uniform_host_vram;
+    void *uniform_host_vram_map;
     /* commands */
     VkCommandPool command_pool;
 };

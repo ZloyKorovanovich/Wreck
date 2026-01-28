@@ -189,7 +189,7 @@ b32 checkPhysicalDevice(VkPhysicalDevice device, MsgCallback_pfn msg_callback, D
 
 /* return pointer to best of 2 */
 const DeviceInfo *compareDevices(const DeviceInfo *a, const DeviceInfo *b) {
-    if(b->device_model == DEVICE_MODEL_INTEGRATED && a->device_model != DEVICE_MODEL_INTEGRATED) return b;
+    if(b->device_model == DEVICE_MODEL_DESCRETE && a->device_model != DEVICE_MODEL_DESCRETE) return b;
     /* check queues */
     if(b->compute_queue_id != U32_MAX && a->compute_queue_id == U32_MAX) return b;
     if(b->transfer_queue_id != U32_MAX && a->transfer_queue_id == U32_MAX) return b;
@@ -637,8 +637,14 @@ void destroyVulkanContext(VulkanContext *context) {
 
 
 /*======================================================================
-    LOCAL INTERFACE
+    VRAM
   ======================================================================*/
+/*
+    take this spec as reference, for what you can do with memory: https://docs.vulkan.org/spec/latest/chapters/memory.html
+    "   There must be at least one memory type with both the VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT and VK_MEMORY_PROPERTY_HOST_COHERENT_BIT bits set in its propertyFlags. 
+        There must be at least one memory type with the VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT bit set in its propertyFlags. 
+        If the deviceCoherentMemory feature is enabled, there must be at least one memory type with the VK_MEMORY_PROPERTY_DEVICE_COHERENT_BIT_AMD bit set in its propertyFlags.    "
+*/
 
 b32 allocateVram(VulkanContext *vulkan_context, const VramInfo *info, Vram *vram) {
     if(info->size == 0 || info->memory_type_bits == 0) return FALSE;

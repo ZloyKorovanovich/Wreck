@@ -33,6 +33,11 @@ void *allocateContext(u64 size, u64 aligment) {
     return allocateArena(&s_context_arena, size, aligment);
 }
 
+typedef struct {
+    f32 time[4];
+    f32 screen_params[4];
+} GlobalUniformBuffer;
+
 
 typedef enum {
     SHADER_PROGRAM_TRIANGLE = 0,
@@ -50,7 +55,7 @@ typedef enum {
 
 const ShaderProgramInfo c_shader_programs[] = {
     [SHADER_PROGRAM_TRIANGLE] = (ShaderProgramInfo) {
-        .flags = SHADER_PROGRAM_FLAG_LINE_MODE,
+        .flags = 0,
         .vertex_shader = CONST_STRING("out/data/triangle_v.spv"),
         .fragment_shader = CONST_STRING("out/data/triangle_f.spv")
     },
@@ -60,7 +65,7 @@ const ShaderProgramInfo c_shader_programs[] = {
         .fragment_shader = CONST_STRING("out/data/default_f.spv"),
     },
     [SHADER_PROGRAM_BODY] = (ShaderProgramInfo) {
-        .flags = SHADER_PRORGAM_FLAG_USE_VERTEX_POSITION | SHADER_PROGRAM_FLAG_POINT_MODE,
+        .flags = SHADER_PRORGAM_FLAG_USE_VERTEX_POSITION,
         .vertex_shader = CONST_STRING("out/data/body_v.spv"),
         .fragment_shader = CONST_STRING("out/data/body_f.spv")
     },
@@ -78,6 +83,10 @@ const MeshInfo c_mesh_infos[] = {
     [MESH_EYE] = (MeshInfo) {
         .file = CONST_STRING("out/data/eye.model")
     }
+};
+
+const UniformBufferInfo c_global_buffer_info = {
+    .size = sizeof(GlobalUniformBuffer)
 };
 
 
@@ -116,7 +125,8 @@ i32 main(i32 argc, char **argv) {
         .program_count = ARRAY_SIZE(c_shader_programs),
         .meshes = c_mesh_infos,
         .mesh_count = ARRAY_SIZE(c_mesh_infos),
-        .msg_callback = &msgCallback
+        .msg_callback = &msgCallback,
+        .global_buffer = &c_global_buffer_info
     };
     RenderContext *render_context = createRenderContext(&allocateContext, &render_info);
     if(!render_context) {
