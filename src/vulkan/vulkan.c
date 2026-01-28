@@ -22,6 +22,16 @@ const char *c_required_device_extension_names[] = {
     VK_KHR_SPIRV_1_4_EXTENSION_NAME
 };
 
+const VkPhysicalDeviceVulkan12Features c_device_features = {
+    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+    .descriptorIndexing = TRUE,
+    .shaderSampledImageArrayNonUniformIndexing = TRUE,
+    .shaderStorageImageArrayNonUniformIndexing = TRUE,
+    .shaderStorageBufferArrayNonUniformIndexing = TRUE,
+    .shaderUniformBufferArrayNonUniformIndexing = TRUE
+};
+
+
 /* debug utils messenger callback */
 VKAPI_ATTR VkBool32 VKAPI_CALL validationDebugCallback(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT *callback_data, void *user_data
@@ -30,7 +40,6 @@ VKAPI_ATTR VkBool32 VKAPI_CALL validationDebugCallback(
         .string = (char[512]){0},
         .capacity = 512
     };
-
     stringPattern(&CONST_STRING(":: vk message :: %c\n"), (const void *[]){callback_data->pMessage}, &string);
     printConsole(&string);
     return !(severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT);
@@ -149,6 +158,25 @@ b32 checkPhysicalDevice(VkPhysicalDevice device, MsgCallback_pfn msg_callback, D
         vkGetPhysicalDeviceMemoryProperties(device, &info->memory_properties);
     }
 
+    /* DEVICE FEATURES */ {
+        VkPhysicalDeviceVulkan12Features present_features = (VkPhysicalDeviceVulkan12Features){
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES
+        };
+        VkPhysicalDeviceFeatures2 features_2 = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+            .pNext = &present_features
+        };
+        vkGetPhysicalDeviceFeatures2(device, &features_2);
+        if(
+            !present_features.shaderSampledImageArrayNonUniformIndexing  ||
+            !present_features.shaderStorageImageArrayNonUniformIndexing  ||
+            !present_features.shaderStorageBufferArrayNonUniformIndexing ||
+            !present_features.shaderUniformBufferArrayNonUniformIndexing
+        ) {
+            goto _fail;
+        }
+    }
+
     /* _success: */ {
         popStack(stack);
         return TRUE;
@@ -161,7 +189,7 @@ b32 checkPhysicalDevice(VkPhysicalDevice device, MsgCallback_pfn msg_callback, D
 
 /* return pointer to best of 2 */
 const DeviceInfo *compareDevices(const DeviceInfo *a, const DeviceInfo *b) {
-    if(b->device_model == DEVICE_MODEL_DESCRETE && a->device_model != DEVICE_MODEL_DESCRETE) return b;
+    if(b->device_model == DEVICE_MODEL_INTEGRATED && a->device_model != DEVICE_MODEL_INTEGRATED) return b;
     /* check queues */
     if(b->compute_queue_id != U32_MAX && a->compute_queue_id == U32_MAX) return b;
     if(b->transfer_queue_id != U32_MAX && a->transfer_queue_id == U32_MAX) return b;
@@ -527,10 +555,18 @@ VulkanContext *createVulkanContext(Allocate_pfn context_allocate, const VulkanCo
             };
         }
 
+        VkPhysicalDeviceDescriptorIndexingFeatures descriptor_indexing_info = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES,
+            .shaderUniformBufferArrayNonUniformIndexing = TRUE,
+            .shaderStorageBufferArrayNonUniformIndexing = TRUE,
+            .shaderStorageImageArrayNonUniformIndexing = TRUE,
+            .shaderSampledImageArrayNonUniformIndexing = TRUE
+        };
         /* dynamic rendering ext */
         VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamic_rendering_info = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR,
-            .dynamicRendering = TRUE
+            .dynamicRendering = TRUE,
+            .pNext = &descriptor_indexing_info
         };
         /* create device */
         VkDeviceCreateInfo device_info = {

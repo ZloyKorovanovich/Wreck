@@ -80,12 +80,6 @@ typedef struct {
 } RenderSettings;
 
 typedef struct {
-    char file[256];
-    VkBuffer vertex_buffer;
-    u32 vertex_count;
-} Mesh;
-
-typedef struct {
     u32 swapchain_image_count;
     VkSwapchainKHR swapchain;
     VkImage *swapchain_images;
@@ -151,9 +145,15 @@ typedef struct {
 typedef struct {
     /* all pointer allocations are made on reasouce_arena */
     RenderMesh *render_meshes;
-    Vram mesh_device_vram;
     u32 meshes_count;
 } Meshes;
+
+typedef struct {
+    VkBuffer *device_uniform_buffers;
+    VkBuffer *host_uniform_buffers;
+    VramRegion *host_buffer_regions;
+    u32 uniform_buffer_count;
+} Uniforms;
 
 /* context of render queue */
 struct RenderContext {
@@ -165,10 +165,13 @@ struct RenderContext {
     /* shader shader_programs */
     Programs shader_programs;
     Meshes render_meshes;
+    Uniforms uniforms;
     /* callback for logs and errors */
     MsgCallback_pfn msg_callback;
     /* memory */
     Vram images_device_vram;
+    Vram mesh_device_vram;
+    Vram uniform_device_vram;
     /* commands */
     VkCommandPool command_pool;
 };

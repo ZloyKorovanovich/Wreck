@@ -846,7 +846,7 @@ b32 createMeshBuffers_DescreteModel(
     }
     
     /* allocate device vram block */
-    if(!allocateVram(vulkan_context, &device_vram_info, &meshes->mesh_device_vram)) {
+    if(!allocateVram(vulkan_context, &device_vram_info, &render_context->mesh_device_vram)) {
         MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate device render meshes vram"));
         return FALSE;
     }
@@ -859,11 +859,11 @@ b32 createMeshBuffers_DescreteModel(
     
     /* bind buffers to memory */
     for(u32 i = 0; i < mesh_count; i++) {
-        if(vkBindBufferMemory(vulkan_context->device, render_meshes[i].vertex_buffer, meshes->mesh_device_vram.memory, device_vertex_regions[i].offset) != VK_SUCCESS) {
+        if(vkBindBufferMemory(vulkan_context->device, render_meshes[i].vertex_buffer, render_context->mesh_device_vram.memory, device_vertex_regions[i].offset) != VK_SUCCESS) {
             MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to bind device vertex buffer memory"));
             return FALSE;
         }
-        if(vkBindBufferMemory(vulkan_context->device, render_meshes[i].index_buffer, meshes->mesh_device_vram.memory, device_index_regions[i].offset) != VK_SUCCESS) {
+        if(vkBindBufferMemory(vulkan_context->device, render_meshes[i].index_buffer, render_context->mesh_device_vram.memory, device_index_regions[i].offset) != VK_SUCCESS) {
             MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to bind device index buffer memory"));
             return FALSE;
         }
@@ -975,6 +975,226 @@ b32 createMeshBuffers_DescreteModel(
     return TRUE;
 }
 
+/* requires nothing extra */
+b32 createMeshBuffers_IntegratedModel(
+    RenderContext *render_context, u32 mesh_count, const MeshInfo *mesh_infos, Stack *init_stack
+) {
+    String log_str = {
+        .string = (char[256]){0},
+        .capacity = 256
+    };
+    /* simple access pointers */
+    VulkanContext *vulkan_context = render_context->vulkan_context;
+    Meshes *meshes = &render_context->render_meshes;
+
+    /* we push stack here to preserve host_mesh_buffers allocation for later use */
+    pushStack(init_stack);
+
+    /* raw mesh array */
+    RawMesh *raw_meshes = NULL;
+    /* vk buffers */
+    VramRegion *device_vertex_regions = NULL;
+    VramRegion *device_index_regions = NULL;
+
+    Arena mesh_arena = (Arena){0};
+    Buffer read_buffer = (Buffer){0};
+
+    /* CPU ARRAYS ALLOCATION */ {
+        /* arena is created because we need simontaneously allocate RawMesh structs and reallocate read_buffer */
+        if(!createArena(&mesh_arena, 1024 * 1024 * 256, 1024 * 64)) {
+            MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to create mesh_arena"));
+            return FALSE;
+        }
+
+        /* raw mesh array for vertex and index pointers */
+        raw_meshes = allocateStack(init_stack, sizeof(RawMesh) * mesh_count, 0);
+        if(!raw_meshes) {
+            MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate raw_meshes array"));
+            return FALSE;
+        }
+
+        /* 1 set for device vertex 1 for device index, total 2! */
+        VramRegion *vram_regions = allocateStack(init_stack, sizeof(VramRegion) * mesh_count * 2, 0);
+        if(!vram_regions) {
+            MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate vram_regions array for meshes"));
+            return FALSE;
+        }
+        device_vertex_regions = vram_regions;
+        device_index_regions = vram_regions + mesh_count;
+
+        /* allocate space for mesh resources */
+        meshes->meshes_count = mesh_count;
+        meshes->render_meshes = allocateArena(&render_context->resource_arena, sizeof(RenderMesh) * mesh_count, 0);
+        if(!meshes->render_meshes) {
+            MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate render_meshes array on resource arena"));
+            return FALSE;
+        }
+
+        /* read buffer should be allocated last on stack, otherwise reallocation will break memory continuity */
+        read_buffer = (Buffer){
+            .buffer = allocateStack(init_stack, 1024 * 64, 16),
+            .size = 1024 * 64
+        };
+        if(!read_buffer.buffer) {
+            MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate read buffer for meshes"));
+            return FALSE;
+        }
+    }
+
+    /* device local allocation for vertex and index buffers */
+    VramInfo device_vram_info = {
+        .mandatory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+        .restricted_flags = 0,
+        .memory_type_bits = U32_MAX, 
+        .aligment = 1
+    };
+
+    /* create mesh structs */
+    RenderMesh *render_meshes = meshes->render_meshes;
+    for(u32 i = 0; i < mesh_count; i++) {
+        /* read file to raw mesh */
+        if(!createRawMesh(&mesh_infos[i].file, render_context->msg_callback, &read_buffer, init_stack, &mesh_arena, &raw_meshes[i])) {
+            stringPattern(&TRACED_STR("failed to create raw mesh from file: \"%s\""), (const void *[]){&mesh_infos[i].file}, &log_str);
+            MSG_ERROR(render_context->msg_callback, &log_str);
+            return FALSE;
+        }
+
+        /* DEVICE BUFFERS */ {
+            render_meshes[i] = (RenderMesh){
+                .vertex_count = raw_meshes[i].vertex_count,
+                .index_count = raw_meshes[i].index_count
+            };
+            const VkBufferCreateInfo vertex_buffer_info = {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                .size = sizeof(Vertex) * raw_meshes[i].vertex_count,
+                .queueFamilyIndexCount = 1,
+                .pQueueFamilyIndices = &vulkan_context->render_queue_id,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+            };
+            const VkBufferCreateInfo index_buffer_info = {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                .size = sizeof(u16) * raw_meshes[i].index_count,
+                .queueFamilyIndexCount = 1,
+                .pQueueFamilyIndices = &vulkan_context->render_queue_id,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+            };
+            if(vkCreateBuffer(vulkan_context->device, &vertex_buffer_info, NULL, &render_meshes[i].vertex_buffer) != VK_SUCCESS) {
+                stringPattern(&TRACED_STR("failed to create vertex buffer file: \"%s\""), (const void *[]){&mesh_infos[i].file}, &log_str);
+                MSG_ERROR(render_context->msg_callback, &log_str);
+                return FALSE;
+            }
+            if(vkCreateBuffer(vulkan_context->device, &index_buffer_info, NULL, &render_meshes[i].index_buffer) != VK_SUCCESS) {
+                stringPattern(&TRACED_STR("failed to create index buffer file: \"%s\""), (const void *[]){&mesh_infos[i].file}, &log_str);
+                MSG_ERROR(render_context->msg_callback, &log_str);
+                return FALSE;
+            }
+
+            /* device memory requirements */
+            VkMemoryRequirements vertex_buffer_requirements = (VkMemoryRequirements){0};
+            VkMemoryRequirements index_buffer_requirements = (VkMemoryRequirements){0};
+            vkGetBufferMemoryRequirements(vulkan_context->device, render_meshes[i].vertex_buffer, &vertex_buffer_requirements);
+            vkGetBufferMemoryRequirements(vulkan_context->device, render_meshes[i].index_buffer, &index_buffer_requirements);
+
+            /* align vram offset for vertex buffer */
+            device_vram_info.size = ALIGN(device_vram_info.size, vertex_buffer_requirements.alignment);
+            device_vertex_regions[i] = (VramRegion) {
+                .offset = device_vram_info.size,
+                .size = vertex_buffer_requirements.size
+            };
+            /* align vram offset again for index buffer, written after vertex buffer */
+            device_vram_info.size = ALIGN((device_vram_info.size + vertex_buffer_requirements.size), index_buffer_requirements.alignment);
+            device_index_regions[i] = (VramRegion) {
+                .offset = device_vram_info.size,
+                .size = index_buffer_requirements.size
+            };
+
+            /* adjust stats of vram info */
+            device_vram_info.size += index_buffer_requirements.size;
+            device_vram_info.memory_type_bits &= vertex_buffer_requirements.memoryTypeBits & index_buffer_requirements.memoryTypeBits;
+            device_vram_info.aligment = MAX(MAX(vertex_buffer_requirements.alignment, index_buffer_requirements.alignment), device_vram_info.aligment);
+        }
+    }
+    
+    /* allocate device vram block */
+    if(!allocateVram(vulkan_context, &device_vram_info, &render_context->mesh_device_vram)) {
+        MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate device render meshes vram"));
+        return FALSE;
+    }
+    
+    /* bind buffers to memory */
+    for(u32 i = 0; i < mesh_count; i++) {
+        if(vkBindBufferMemory(vulkan_context->device, render_meshes[i].vertex_buffer, render_context->mesh_device_vram.memory, device_vertex_regions[i].offset) != VK_SUCCESS) {
+            MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to bind device vertex buffer memory"));
+            return FALSE;
+        }
+        if(vkBindBufferMemory(vulkan_context->device, render_meshes[i].index_buffer, render_context->mesh_device_vram.memory, device_index_regions[i].offset) != VK_SUCCESS) {
+            MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to bind device index buffer memory"));
+            return FALSE;
+        }
+    }
+
+    /* RAW MESHES TO HOST BUFFERS */ {
+        /* map host memory with mesh buffers */
+        void* mapped_memory = NULL;
+        if(vkMapMemory(vulkan_context->device, render_context->mesh_device_vram.memory, 0, render_context->mesh_device_vram.size, 0, &mapped_memory) != VK_SUCCESS) {
+            MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to map host mesh memory"));
+            return FALSE;
+        }
+        
+        /* write mesh buffers with data from raw meshes */
+        for(u32 i = 0; i < mesh_count; i++) {
+            /* make data hopefuly closer to us and mark it as constant */
+            const u32 vertex_count = raw_meshes[i].vertex_count;
+            const u32 index_count = raw_meshes[i].index_count;
+            const Vertex* src_vertices = raw_meshes[i].vertices;
+            const u16* src_indices = raw_meshes[i].indices;
+
+            /* copy vertices */
+            Vertex *dst_vertices = (Vertex *)((u8*)mapped_memory + device_vertex_regions[i].offset);
+            for(u32 i = 0; i < vertex_count; i++) {
+                dst_vertices[i] = src_vertices[i];
+            }
+            /* copy indices */
+            u16 *dst_indices = (u16 *)((u8*)mapped_memory + device_index_regions[i].offset);
+            for(u32 i = 0; i < index_count; i++) {
+                dst_indices[i] = src_indices[i];
+            }
+        }
+
+        /* unmap memory */
+        vkUnmapMemory(vulkan_context->device, render_context->mesh_device_vram.memory);
+    }
+
+    freeArena(&mesh_arena);
+    popStack(init_stack);
+    return TRUE;
+}
+
+
+/*======================================================================
+    UNIFORMS
+  ======================================================================*/
+
+b32 createUniformBuffers_DescreteModel(
+    RenderContext *render_context, const UniformBufferInfo *global_buffer_info,
+    u32 static_buffer_count, const UniformBufferInfo *static_buffer_infos, 
+    u32 dynamic_buffer_count, const UniformBufferInfo *dynamic_buffer_infos, 
+    VkFence *transfer_fence, Stack *init_stack
+) {
+    String log_str = STACK_STR(256);
+
+    VulkanContext *vulkan_context = render_context->vulkan_context;
+    Uniforms *uniforms = &render_context->uniforms;
+
+    pushStack(&init_stack);
+
+    
+
+    popStack(&init_stack);
+    return TRUE;
+}
 
 /*======================================================================
     INTERFACE
@@ -1068,8 +1288,10 @@ RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderCo
             }
             /* if model is integrated, we dont need any mesh transfers from cpu to gpu, because device local is visible to host */
             if(vulkan_context->device_model == DEVICE_MODEL_INTEGRATED) {
-                MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create mesh buffers"));
-                return FALSE;
+                if(!createMeshBuffers_IntegratedModel(context, info->mesh_count, info->meshes, &init_stack)) {
+                    MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create mesh buffers"));
+                    return FALSE;
+                }
             }
         }
     }
@@ -1179,21 +1401,22 @@ RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderCo
     }
 
     /* CLEANUP */ {
-        if(transfer_fence) {
+        if(vulkan_context->device_model == DEVICE_MODEL_DESCRETE) {
             /* first wait for it then destroy */
             vkWaitForFences(vulkan_context->device, 1, &transfer_fence, TRUE, U64_MAX);
             vkDestroyFence(vulkan_context->device, transfer_fence, NULL);
-        }
-        /* MESH BUFFERS HERRITAGE */ {
-            if(mesh_buffers_descrete_herritage.host_buffer_count != 0) {
-                for(u32 i = 0; i < mesh_buffers_descrete_herritage.host_buffer_count; i++) {
-                    vkDestroyBuffer(vulkan_context->device, mesh_buffers_descrete_herritage.host_buffers[i], NULL);
+
+            /* MESH BUFFERS HERRITAGE */ {
+                if(mesh_buffers_descrete_herritage.host_buffer_count != 0) {
+                    for(u32 i = 0; i < mesh_buffers_descrete_herritage.host_buffer_count; i++) {
+                        vkDestroyBuffer(vulkan_context->device, mesh_buffers_descrete_herritage.host_buffers[i], NULL);
+                    }
                 }
+                if(mesh_buffers_descrete_herritage.host_buffers_vram.memory) {
+                    freeVram(vulkan_context, &mesh_buffers_descrete_herritage.host_buffers_vram);
+                }
+                mesh_buffers_descrete_herritage = (MeshBuffers_DescreteModel_Heritage){0};
             }
-            if(mesh_buffers_descrete_herritage.host_buffers_vram.memory) {
-                freeVram(vulkan_context, &mesh_buffers_descrete_herritage.host_buffers_vram);
-            }
-            mesh_buffers_descrete_herritage = (MeshBuffers_DescreteModel_Heritage){0};
         }
     }
 
@@ -1226,7 +1449,7 @@ void destroyRenderContext(RenderContext *context) {
             vkDestroyBuffer(vulkan_context->device, render_meshes[i].vertex_buffer, NULL);
             vkDestroyBuffer(vulkan_context->device, render_meshes[i].index_buffer, NULL);
         }
-        freeVram(vulkan_context, &context->render_meshes.mesh_device_vram);
+        freeVram(vulkan_context, &context->mesh_device_vram);
     }
 
     /* SCREEN IMAGES */ {
@@ -1339,7 +1562,7 @@ b32 runRenderLoop(RenderContext *render_context, RenderUpdate_pfn update_callbac
                 continue;
             }
             /* check for errors */ 
-            else if(aquire_result != VK_SUCCESS) {
+            else if(aquire_result != VK_SUCCESS && aquire_result != VK_SUBOPTIMAL_KHR) {
                 MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to aquire swapchain image"));
                 return FALSE;
             }
