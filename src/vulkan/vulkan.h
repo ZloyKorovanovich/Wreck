@@ -149,10 +149,17 @@ typedef struct {
 } Meshes;
 
 typedef struct {
-    VkBuffer global_device_buffer;
-    VkBuffer global_host_buffer;
-    VramRegion global_host_region;
-} Uniforms;
+    /* uniform buffer */
+    VkBuffer device_uniform_buffer;
+    VkBuffer host_uniform_buffer;
+    VramRegion host_uniform_region;
+    /* storage buffers */
+    VkBuffer *device_storage_buffers;
+    VkBuffer *host_storage_buffers; /* only matters if device type is descrete */
+    VramRegion *host_storage_regions;
+    u32 storage_buffer_count;
+    u32 host_mutable_storage_buffer_count; /* should be <= storage_buffer_count*/
+} Buffers;
 
 /* context of render queue */
 struct RenderContext {
@@ -164,16 +171,17 @@ struct RenderContext {
     /* shader shader_programs */
     Programs shader_programs;
     Meshes render_meshes;
-    Uniforms uniforms;
+    Buffers buffers;
     /* callback for logs and errors */
     MsgCallback_pfn msg_callback;
     /* memory */
     Vram images_device_vram;
     Vram mesh_device_vram;
-    Vram uniform_device_vram;
     
-    Vram uniform_host_vram;
-    void *uniform_host_vram_map;
+    /* buffers are uniform buffer and storage buffers, that are used for object description, like transform matrices, etc.*/
+    Vram buffers_device_vram; /* stores uniform buffer, host mutable device stroage buffers and host immutable storage buffers */
+    Vram buffers_host_vram; /* stores uniform src buffer and host mutable src stroagr buffers */
+    void *buffers_host_vram_map; /* map for buffers_host_vram */
     /* commands */
     VkCommandPool command_pool;
 };

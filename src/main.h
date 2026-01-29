@@ -84,18 +84,28 @@ typedef struct {
 
 /* global uniform buffer that is used during update */
 typedef struct {
-    void* data;
+    void *data;
     u64 size;
 } UniformBufferInfo;
 
 typedef struct {
+    void *data;
+    u64 stride;
+    u64 size;
+} StorageBufferInfo;
+
+typedef struct {
     VulkanContext *vulkan_context;
-    /* shader_programs */
+    /* resources */
+    const UniformBufferInfo *global_buffer; /* used for common data like projection matrix, time values, screen resolution, etc. */
+
     const ShaderProgramInfo *programs; /* program ids will be preserved for access */
     const MeshInfo *meshes;
-    const UniformBufferInfo *global_buffer; /* used for common data like projection matrix, time values, screen resolution, etc. */
+    const StorageBufferInfo *storage_buffers;
     u32 program_count;
     u32 mesh_count; 
+    u32 storage_buffer_count;
+    u32 storage_host_mutable_buffer_count; /* <= storage_buffer_count*/
     /* callbacks */
     MsgCallback_pfn msg_callback;
 } RenderContextInfo;
