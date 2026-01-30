@@ -18,11 +18,21 @@ typedef struct {
 
 typedef struct {
     u64 size;
-    u64 aligment;
+    u64 alignment;
     u32 memory_type_bits;
     u32 mandatory_flags;
     u32 restricted_flags;
 } VramInfo;
+
+#define ADJUST_VRAM_INFO(info, region, requirements)            \
+info.size = ALIGN(info.size, requirements.alignment);           \
+region = (VramRegion) {                                         \
+    .offset = info.size,                                        \
+    .size = requirements.size                                   \
+};                                                              \
+info.size += requirements.size;                                 \
+info.alignment = MAX(info.alignment, requirements.alignment);   \
+info.memory_type_bits &= requirements.memoryTypeBits;
 
 typedef struct {
     VkDeviceMemory memory;
@@ -155,10 +165,10 @@ typedef struct {
     VramRegion host_uniform_region;
     /* storage buffers */
     VkBuffer *device_storage_buffers;
-    VkBuffer *host_storage_buffers; /* only matters if device type is descrete */
-    VramRegion *host_storage_regions;
+    VkBuffer *host_storage_buffers;
+    VramRegion *host_storage_buffer_regions;
     u32 storage_buffer_count;
-    u32 host_mutable_storage_buffer_count; /* should be <= storage_buffer_count*/
+    u32 mutable_storage_buffer_count;
 } Buffers;
 
 /* context of render queue */

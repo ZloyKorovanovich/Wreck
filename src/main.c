@@ -29,14 +29,19 @@ void msgCallback(i32 code, const String *msg) {
 }
 
 static Arena s_context_arena = (Arena){0};
-void *allocateContext(u64 size, u64 aligment) {
-    return allocateArena(&s_context_arena, size, aligment);
+void *allocateContext(u64 size, u64 alignment) {
+    return allocateArena(&s_context_arena, size, alignment);
 }
 
 typedef struct {
     f32 time[4];
     f32 screen_params[4];
-} GlobalUniformBuffer;
+} UniformBuffer;
+
+typedef struct {
+    f32 position[4];
+    f32 rotation[4];
+} UniformScaleObject;
 
 
 typedef enum {
@@ -52,6 +57,12 @@ typedef enum {
     MESH_EYE = 1,
     MESH_SHITY_QUAD_COUNT
 } Meshes;
+
+typedef enum {
+    STORAGE_BUFFER_UNIFORM_SCALE = 0,
+    STORAGE_BUFFER_COUNT
+} StorageBuffers;
+
 
 const ShaderProgramInfo c_shader_programs[] = {
     [SHADER_PROGRAM_TRIANGLE] = (ShaderProgramInfo) {
@@ -85,8 +96,16 @@ const MeshInfo c_mesh_infos[] = {
     }
 };
 
-const UniformBufferInfo c_global_buffer_info = {
-    .size = sizeof(GlobalUniformBuffer)
+const StorageBufferInfo c_storage_buffers[] = {
+    [STORAGE_BUFFER_UNIFORM_SCALE] = (StorageBufferInfo) {
+        .size = sizeof(UniformScaleObject) * 1024,
+        .stride = sizeof(UniformScaleObject)
+    }
+};
+
+const UniformBufferInfo c_uniform_buffer_info = {
+    .size = sizeof(UniformBuffer),
+    .data = (UniformBuffer[]){(UniformBuffer){0}}
 };
 
 
@@ -121,12 +140,18 @@ i32 main(i32 argc, char **argv) {
     /* render context creation */
     const RenderContextInfo render_info = {
         .vulkan_context = vulkan_context,
+        .msg_callback = &msgCallback,
+        /* programs */
         .programs = c_shader_programs,
         .program_count = ARRAY_SIZE(c_shader_programs),
+        /* meshes */
         .meshes = c_mesh_infos,
         .mesh_count = ARRAY_SIZE(c_mesh_infos),
-        .msg_callback = &msgCallback,
-        .global_buffer = &c_global_buffer_info
+        /* buffers */
+        .uniform_buffer = &c_uniform_buffer_info,
+        .storage_buffers = c_storage_buffers,
+        .storage_host_mutable_buffer_count = 1,
+        .storage_buffer_count = ARRAY_SIZE(c_storage_buffers)
     };
     RenderContext *render_context = createRenderContext(&allocateContext, &render_info);
     if(!render_context) {

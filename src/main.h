@@ -97,7 +97,7 @@ typedef struct {
 typedef struct {
     VulkanContext *vulkan_context;
     /* resources */
-    const UniformBufferInfo *global_buffer; /* used for common data like projection matrix, time values, screen resolution, etc. */
+    const UniformBufferInfo *uniform_buffer; /* used for common data like projection matrix, time values, screen resolution, etc. */
 
     const ShaderProgramInfo *programs; /* program ids will be preserved for access */
     const MeshInfo *meshes;
