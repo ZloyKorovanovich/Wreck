@@ -157,8 +157,8 @@ i32 main(i32 argc, char **argv) {
         /* buffers */
         .uniform_buffer = &c_uniform_buffer_info,
         .storage_buffers = c_storage_buffers,
-        .storage_host_mutable_buffer_count = STORAGE_BUFFER_MUTABLE_COUNT,
-        .storage_buffer_count = STORAGE_BUFFER_COUNT
+        .storage_host_mutable_buffer_count = 0,
+        .storage_buffer_count = 0
     };
     RenderContext *render_context = createRenderContext(&allocateContext, &render_info);
     if(!render_context) {

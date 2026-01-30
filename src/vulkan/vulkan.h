@@ -166,7 +166,7 @@ typedef struct {
     /* storage buffers */
     VkBuffer *device_storage_buffers;
     VkBuffer *host_storage_buffers;
-    VramRegion *host_storage_buffer_regions;
+    VramRegion *host_storage_regions;
     u32 storage_buffer_count;
     u32 mutable_storage_buffer_count;
 } Buffers;

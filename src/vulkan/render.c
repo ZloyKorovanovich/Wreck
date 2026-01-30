@@ -559,9 +559,9 @@ b32 createShaderPrograms(RenderContext *render_context, u32 program_count, const
     MESHES
   ======================================================================*/
 
-/* when calling createMeshBuffers_DescreteModel some buffers will be created on the host side, to transfer meshes to gpu local memory,
+/* When calling createMeshBuffers_DescreteModel some buffers will be created on the host side, to transfer meshes to gpu local memory,
     we will do some other cpu work and gpu commands at the same time, so buffers will need to be destructed later, when VkFence,
-    passed to function will be signaled, we will need to destroy that buffer and free memory */
+    passed to function will be signaled, we will need to destroy that buffer and free memory. */
 typedef struct {
     VkBuffer *host_buffers;
     u32 host_buffer_count;
@@ -1163,6 +1163,8 @@ b32 createMeshBuffers_IntegratedModel(
 /*======================================================================
     BUFFERS
   ======================================================================*/
+/* Buffers struct contains 1 uniform buffer, that should be used for global frame data, like time, screen params, screen textures.
+    All other params should be passed via big storage buffers, for object groups. */
 
 typedef struct {
     VkBuffer *host_buffers;
@@ -1222,11 +1224,13 @@ b32 createBuffers_DescreteModel(
     };
 
     /* ALLOCATE HERITAGE BUFFERS */ {
-        /* we need to allocate these prior to pushing init stack, to preserve heritage, which will be accessed outside of this proc */
-        host_const_storage_buffers = allocateStack(init_stack, sizeof(VkBuffer) * const_storage_buffer_count, 0);
-        if(!host_const_storage_buffers) {
-            MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate host_const_storage_buffers"));
-            return FALSE; 
+        if(const_storage_buffer_count != 0) {
+            /* we need to allocate these prior to pushing init stack, to preserve heritage, which will be accessed outside of this proc */
+            host_const_storage_buffers = allocateStack(init_stack, sizeof(VkBuffer) * const_storage_buffer_count, 0);
+            if(!host_const_storage_buffers) {
+                MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate host_const_storage_buffers"));
+                return FALSE; 
+            }
         }
     }
 
@@ -1271,7 +1275,7 @@ b32 createBuffers_DescreteModel(
         ADJUST_VRAM_INFO(host_vram_info, buffers->host_uniform_region, host_buffer_requirements);
     }
 
-    /* STORAGE BUFFERS */
+    /* STORAGE BUFFERS AND RESOURCE ARRAYS */
     if(storage_buffer_count != 0) {
         /* ALLOCATE RESOURCE ARRAYS */ {
             u64 allocation_size = sizeof(VramRegion) * mutable_storage_buffer_count + sizeof(VkBuffer) * (mutable_storage_buffer_count + storage_buffer_count);
@@ -1281,7 +1285,7 @@ b32 createBuffers_DescreteModel(
                 return FALSE;
             }
             
-            host_mutable_storage_regions = buffers->host_storage_buffer_regions = (mutable_storage_buffer_count != 0) ? (VramRegion *)buffers_allocation : NULL;
+            host_mutable_storage_regions = buffers->host_storage_regions = (mutable_storage_buffer_count != 0) ? (VramRegion *)buffers_allocation : NULL;
             host_mutable_storage_buffers = buffers->host_storage_buffers = (mutable_storage_buffer_count != 0) ? (VkBuffer *)((u8 *)buffers_allocation + sizeof(VramRegion) * mutable_storage_buffer_count) : NULL;
             device_storage_buffers = buffers->device_storage_buffers = (VkBuffer *)((u8 *)buffers_allocation + sizeof(VramRegion) * mutable_storage_buffer_count + sizeof(VkBuffer) * mutable_storage_buffer_count);
 
@@ -1560,6 +1564,135 @@ b32 createBuffers_DescreteModel(
     return TRUE;
 }
 
+/* for integrated gpus host mutable and host immutable buffers are no different */
+b32 createBuffers_IntegratedModel(
+    RenderContext *render_context, const UniformBufferInfo *uniform_buffer_info, 
+    u32 storage_buffer_count, const StorageBufferInfo *storage_buffer_infos,
+    Stack *init_stack
+) {
+    /* When using integrated device model, memory is fused and we can directly write into device local.
+        We will store all buffers in host_ slots, because memory map variables are made for host memory. */
+
+    String log_str = STACK_STR(256);
+
+    VulkanContext *vulkan_context = render_context->vulkan_context;
+    Buffers *buffers = &render_context->buffers;
+
+    /* references for simple access */
+    VkBuffer *storage_buffers = NULL;
+    VramRegion *storage_regions = NULL;
+
+    VramInfo host_vram_info = {
+        .alignment = 1,
+        .mandatory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+        .memory_type_bits = U32_MAX
+    };
+
+    /* RESOURCE ARRAY ALLOCATION */ {
+        if(storage_buffer_count != 0) {
+            void *resource_buffer = allocateArena(&render_context->resource_arena, (sizeof(VramRegion) + sizeof(VkBuffer)) * storage_buffer_count, 0);  
+            if(!resource_buffer) {
+                MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate storage_buffers array"));
+                return FALSE;
+            }
+
+            storage_regions = buffers->host_storage_regions = (VramRegion *)resource_buffer;
+            storage_buffers = buffers->host_storage_buffers = (VkBuffer *)((u8 *)resource_buffer + sizeof(VramRegion) * storage_buffer_count);
+            buffers->storage_buffer_count = storage_buffer_count;
+        }
+    }
+
+    /* BUFFER CREATION */ {
+        /* uniform buffer creation */
+        if(uniform_buffer_info) {
+            /* uniform buffer */
+            const VkBufferCreateInfo uniform_buffer_create_info = {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                .size = uniform_buffer_info->size,
+                .queueFamilyIndexCount = 1,
+                .pQueueFamilyIndices = &vulkan_context->render_queue_id
+            };
+            /* create buffer */
+            if(vkCreateBuffer(vulkan_context->device, &uniform_buffer_create_info, NULL, &buffers->host_uniform_buffer) != VK_SUCCESS) {
+                MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to create uniform buffer"));
+                return FALSE;
+            }
+
+            /* get requirements */
+            VkMemoryRequirements buffer_requirements = (VkMemoryRequirements){0};
+            vkGetBufferMemoryRequirements(vulkan_context->device, buffers->host_uniform_buffer, &buffer_requirements);
+            /* adjust vram allocation */
+            ADJUST_VRAM_INFO(host_vram_info, buffers->host_uniform_region, buffer_requirements);
+        }
+        /* stroage buffers creation */
+        if(storage_buffer_count != 0) {
+            for(u32 i = 0; i < storage_buffer_count; i++) {
+                /* storage buffer */
+                const VkBufferCreateInfo storage_buffer_create_info = {
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                    .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                    .size = storage_buffer_infos[i].size,
+                    .queueFamilyIndexCount = 1,
+                    .pQueueFamilyIndices = &vulkan_context->render_queue_id
+                };
+                /* create buffer */
+                if(vkCreateBuffer(vulkan_context->device, &storage_buffer_create_info, NULL, &storage_buffers[i]) != VK_SUCCESS) {
+                    stringPattern(&TRACED_STR("failed to create storage buffer id: %u32"), (const void *[]){&i}, &log_str);
+                    MSG_ERROR(render_context->msg_callback, &log_str);
+                    return FALSE;
+                }
+
+                /* get requirements */
+                VkMemoryRequirements buffer_requirements = (VkMemoryRequirements){0};
+                vkGetBufferMemoryRequirements(vulkan_context->device, storage_buffers[i], &buffer_requirements);
+                /* adjust vram allocation */
+                ADJUST_VRAM_INFO(host_vram_info, buffers->host_storage_regions[i], buffer_requirements);
+            }
+        }
+    }
+
+    /* VRAM ALLOCATION */ {
+        if(!allocateVram(vulkan_context, &host_vram_info, &render_context->buffers_host_vram)) {
+            MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate buffers vram"));
+            return FALSE;
+        }
+        if(vkMapMemory(vulkan_context->device, render_context->buffers_host_vram.memory, 0, render_context->buffers_host_vram.size, 0, &render_context->buffers_host_vram_map) != VK_SUCCESS) {
+            MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to map buffers vram"));
+            return FALSE;
+        }
+    }
+
+    /* BIND MEMORY & WRITE DATA */ {
+        if(uniform_buffer_info) {
+            /* bind memory to uniform buffer */
+            if(vkBindBufferMemory(vulkan_context->device, buffers->host_uniform_buffer, render_context->buffers_host_vram.memory, buffers->host_uniform_region.offset) != VK_SUCCESS) {
+                MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to bind uniform buffer memory"));
+                return FALSE;
+            }
+            /* copy memory if init data is available */
+            if(uniform_buffer_info->data) {
+                copyMemory((u8 *)render_context->buffers_host_vram_map + buffers->host_uniform_region.offset, uniform_buffer_info->data, uniform_buffer_info->size);
+            }
+        }
+        if(storage_buffer_count != 0) {
+            for(u32 i = 0; i < storage_buffer_count; i++) {
+                /* bind memory to uniform buffer */
+                if(vkBindBufferMemory(vulkan_context->device, storage_buffers[i], render_context->buffers_host_vram.memory, storage_regions[i].offset) != VK_SUCCESS) {
+                    stringPattern(&TRACED_STR("failed to bind storage buffer memory id: %u32"), (const void *[]){&i}, &log_str);
+                    MSG_ERROR(render_context->msg_callback, &log_str);
+                }
+                /* copy memory if init data is available */
+                if(storage_buffer_infos[i].data) {
+                    copyMemory((u8 *)render_context->buffers_host_vram_map + storage_regions[i].offset, storage_buffer_infos[i].data, storage_buffer_infos[i].size);
+                }
+            }
+        }
+    }
+
+    return TRUE;
+}
+
 /*======================================================================
     INTERFACE
   ======================================================================*/
@@ -1679,8 +1812,9 @@ RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderCo
     }
 
     Buffers_DescreteModel_Heritage buffers_descrete_heritage = (Buffers_DescreteModel_Heritage){0};
-    /* UNIFORMS */ {
+    /* BUFFERS */ {
         if(info->uniform_buffer || info->storage_buffer_count != 0) {
+            /* if descrete model host buffers are required to transfer data on gpu */
             if(vulkan_context->device_model == DEVICE_MODEL_DESCRETE) {
                 /* fence is set to signaled by default */
                 vkResetFences(vulkan_context->device, 1, &uniforms_fence);
@@ -1690,7 +1824,13 @@ RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderCo
                     info->storage_buffer_count, info->storage_host_mutable_buffer_count, info->storage_buffers,
                     uniforms_fence, init_cmbuffers[init_cmbuffers_in_use++], &init_stack, &buffers_descrete_heritage
                 )) {
-                    MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create uniform buffers"));
+                    MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create buffers"));
+                    return FALSE;
+                }
+            }
+            if(vulkan_context->device_model == DEVICE_MODEL_INTEGRATED) {
+                if(!createBuffers_IntegratedModel(context, info->uniform_buffer, info->storage_buffer_count, info->storage_buffers, &init_stack)) {
+                    MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create buffers"));
                     return FALSE;
                 }
             }
@@ -1859,26 +1999,49 @@ void destroyRenderContext(RenderContext *context) {
     }
 
     /* UNIFORMS */ {
-        const u32 device_storage_buffer_count = context->buffers.storage_buffer_count;
-        const u32 host_storage_buffer_count = context->buffers.mutable_storage_buffer_count;
-        VkBuffer *device_storage_buffers = context->buffers.device_storage_buffers;
-        VkBuffer *host_storage_buffers = context->buffers.host_storage_buffers;
-        /* destroy buffers */
-        for(u32 i = 0; i < device_storage_buffer_count; i++) {
-            vkDestroyBuffer(vulkan_context->device, device_storage_buffers[i], NULL);
+        /* host and device buffers */
+        if(vulkan_context->device_model == DEVICE_MODEL_DESCRETE) {
+            const u32 device_storage_buffer_count = context->buffers.storage_buffer_count;
+            const u32 host_storage_buffer_count = context->buffers.mutable_storage_buffer_count;
+            VkBuffer *device_storage_buffers = context->buffers.device_storage_buffers;
+            VkBuffer *host_storage_buffers = context->buffers.host_storage_buffers;
+            /* destroy buffers */
+            for(u32 i = 0; i < device_storage_buffer_count; i++) {
+                vkDestroyBuffer(vulkan_context->device, device_storage_buffers[i], NULL);
+            }
+            for(u32 i = 0; i < host_storage_buffer_count; i++) {
+                vkDestroyBuffer(vulkan_context->device, host_storage_buffers[i], NULL);
+            }
+
+            if(context->buffers.device_uniform_buffer) {
+                vkDestroyBuffer(vulkan_context->device, context->buffers.host_uniform_buffer, NULL);
+                vkDestroyBuffer(vulkan_context->device, context->buffers.device_uniform_buffer, NULL);
+            }
+        
+            if(context->buffers_host_vram.memory) {
+                vkUnmapMemory(vulkan_context->device, context->buffers_host_vram.memory);
+                freeVram(vulkan_context, &context->buffers_host_vram);
+            }
+            if(context->buffers_device_vram.memory) {
+                freeVram(vulkan_context, &context->buffers_device_vram);
+            }
         }
-        for(u32 i = 0; i < host_storage_buffer_count; i++) {
-            vkDestroyBuffer(vulkan_context->device, host_storage_buffers[i], NULL);
-        }
-    
-        if(context->buffers_host_vram.memory) {
-            vkUnmapMemory(vulkan_context->device, context->buffers_host_vram.memory);
-            vkDestroyBuffer(vulkan_context->device, context->buffers.host_uniform_buffer, NULL);
-            freeVram(vulkan_context, &context->buffers_host_vram);
-        }
-        if(context->buffers_device_vram.memory) {
-            vkDestroyBuffer(vulkan_context->device, context->buffers.device_uniform_buffer, NULL);
-            freeVram(vulkan_context, &context->buffers_device_vram);
+        /* all buffers in host_ slots */
+        if(vulkan_context->device_model == DEVICE_MODEL_INTEGRATED) {
+            const u32 storage_buffer_count = context->buffers.storage_buffer_count;
+            VkBuffer *storage_buffers = context->buffers.host_storage_buffers;
+
+            for(u32 i = 0; i < storage_buffer_count; i++) {
+                vkDestroyBuffer(vulkan_context->device, storage_buffers[i], NULL);
+            }
+            if(context->buffers.host_uniform_buffer) {
+                vkDestroyBuffer(vulkan_context->device, context->buffers.host_uniform_buffer, NULL);
+            }
+
+            if(context->buffers_host_vram.memory) {
+                vkUnmapMemory(vulkan_context->device, context->buffers_host_vram.memory);
+                freeVram(vulkan_context, &context->buffers_host_vram);
+            }
         }
     }
 
