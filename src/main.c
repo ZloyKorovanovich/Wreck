@@ -55,11 +55,13 @@ typedef enum {
 typedef enum {
     MESH_BODY = 0,
     MESH_EYE = 1,
-    MESH_SHITY_QUAD_COUNT
+    MESH_COUNT
 } Meshes;
 
 typedef enum {
     STORAGE_BUFFER_UNIFORM_SCALE = 0,
+    STORAGE_BUFFER_MUTABLE_COUNT,
+    STORAGE_BUFFER_CUBE_GRID = 1,
     STORAGE_BUFFER_COUNT
 } StorageBuffers;
 
@@ -98,8 +100,13 @@ const MeshInfo c_mesh_infos[] = {
 
 const StorageBufferInfo c_storage_buffers[] = {
     [STORAGE_BUFFER_UNIFORM_SCALE] = (StorageBufferInfo) {
-        .size = sizeof(UniformScaleObject) * 1024,
+        .size = sizeof(UniformScaleObject) * 2,
         .stride = sizeof(UniformScaleObject)
+    },
+    [STORAGE_BUFFER_CUBE_GRID] = (StorageBufferInfo) {
+        .size = sizeof(UniformScaleObject) * 2,
+        .stride = sizeof(UniformScaleObject),
+        .data = (UniformScaleObject[2]){0}
     }
 };
 
@@ -143,15 +150,15 @@ i32 main(i32 argc, char **argv) {
         .msg_callback = &msgCallback,
         /* programs */
         .programs = c_shader_programs,
-        .program_count = ARRAY_SIZE(c_shader_programs),
+        .program_count = SHADER_PROGRAM_COUNT,
         /* meshes */
         .meshes = c_mesh_infos,
-        .mesh_count = ARRAY_SIZE(c_mesh_infos),
+        .mesh_count = MESH_COUNT,
         /* buffers */
         .uniform_buffer = &c_uniform_buffer_info,
         .storage_buffers = c_storage_buffers,
-        .storage_host_mutable_buffer_count = 1,
-        .storage_buffer_count = ARRAY_SIZE(c_storage_buffers)
+        .storage_host_mutable_buffer_count = STORAGE_BUFFER_MUTABLE_COUNT,
+        .storage_buffer_count = STORAGE_BUFFER_COUNT
     };
     RenderContext *render_context = createRenderContext(&allocateContext, &render_info);
     if(!render_context) {

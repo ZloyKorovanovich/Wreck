@@ -104,8 +104,8 @@ typedef struct {
     const StorageBufferInfo *storage_buffers;
     u32 program_count;
     u32 mesh_count; 
-    u32 storage_buffer_count;
-    u32 storage_host_mutable_buffer_count; /* <= storage_buffer_count*/
+    u32 storage_buffer_count; /* total storage buffer count */
+    u32 storage_host_mutable_buffer_count; /* should be not greater than storage_buffer_count*/
     /* callbacks */
     MsgCallback_pfn msg_callback;
 } RenderContextInfo;
