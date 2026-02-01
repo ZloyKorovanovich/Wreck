@@ -119,9 +119,24 @@ void stringPatternTest(void) {
     printConsole(&print_string);
 }
 
+void asmTest(void) {
+    u32 array_dst[15] = {0};
+    u32 array_src[10] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+    asmCopyMemoryDwordAtomicW(array_dst, array_src, 10);
+    asmCopyMemoryQwordAtomicW(array_dst, array_src + 4, 2);
+
+    String str = STACK_STR(256);
+    for(u32 i = 0; i < 10; i++) {
+        stringAddU64(&str, array_dst[i]);
+        stringAddChar(&str, ' ');
+    }
+    printConsole(&str);
+}
+
 i32 main(i32 argc, char **argv) {
     arenaTest();
     stringPatternTest();
+    asmTest();
 
     return 0;
 }

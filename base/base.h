@@ -117,8 +117,8 @@ typedef struct {
 
 /* if limit is default, use limit = 0 */
 b32 createArena(Arena *arena, u64 limit, u64 expansion);
-/* if aligment is any use 0 */
-void *allocateArena(Arena *arena, u64 size, u64 aligment);
+/* if alignment is any use 0 */
+void *allocateArena(Arena *arena, u64 size, u64 alignment);
 /* clears arena, so that you can overwrite memory */
 void clearArena(Arena *arena);
 /* realses physical memory, but keeps virtual */
@@ -138,8 +138,8 @@ typedef struct {
 
 /* if limit is default, use limit = 0 */
 b32 createStack(Stack *stack, u64 limit, u64 expansion);
-/* if aligment default any use 0 */
-void *allocateStack(Stack *stack, u64 size, u64 aligment);
+/* if alignment default any use 0 */
+void *allocateStack(Stack *stack, u64 size, u64 alignment);
 /* saves current edge and sets edge to end pointer */
 void *pushStack(Stack *stack);
 /* the oposite of push */
@@ -155,7 +155,7 @@ b32 freeStack(Stack *stack);
     MEMORY
   ======================================================================*/
 
-typedef void *(*Allocate_pfn)(u64 size, u64 aligment);
+typedef void *(*Allocate_pfn)(u64 size, u64 alignment);
 
 typedef struct {
     void *buffer;
@@ -213,5 +213,12 @@ b32 scanConsole(String *string);
 
 u64 fileToBuffer(const String *path, Buffer *buffer);
 b32 bufferToFile(const String *path, const Buffer *buffer);
+
+/*======================================================================
+    ASSEMBLY
+  ======================================================================*/
+
+void asmCopyMemoryDwordAtomicW(void *dst, void* src, u64 count);
+void asmCopyMemoryQwordAtomicW(void *dst, void* src, u64 count);
 
 #endif

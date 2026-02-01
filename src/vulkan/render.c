@@ -457,12 +457,43 @@ b32 createShaderPrograms(RenderContext *render_context, u32 program_count, const
     /* struct to fill */
     Programs *programs = &render_context->shader_programs;
 
-    /* PIPELINE LAYOUT */ {
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {
+    /* PIPELINE LAYOUTS */ {
+        u32 set_layout_count = 0;
+        VkDescriptorSetLayout set_layouts[4] = {0};
+        if(render_context->descriptors.frame_layout) {
+            set_layouts[set_layout_count++] = render_context->descriptors.frame_layout;
+        }
+        if(render_context->descriptors.storage_buffers_layout) {
+            set_layouts[set_layout_count++] = render_context->descriptors.storage_buffers_layout;
+        }
+        if(render_context->descriptors.sampled_images_layout) {
+            set_layouts[set_layout_count++] = render_context->descriptors.sampled_images_layout;
+        }
+        if(render_context->descriptors.storage_images_layout) {
+            set_layouts[set_layout_count++] = render_context->descriptors.storage_images_layout;
+        }
+
+        const VkPushConstantRange push_range = {
+            .offset = 0,
+            .size = PUSH_CONSTANT_RANGE,
+            .stageFlags = VK_SHADER_STAGE_ALL
+        };
+        const VkPipelineLayoutCreateInfo empty_pipeline_layout_info = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO
         };
-        if(vkCreatePipelineLayout(vulkan_context->device, &pipeline_layout_info, NULL, &programs->pipeline_layout) != VK_SUCCESS) {
-            MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to create pipeline layout"));
+        const VkPipelineLayoutCreateInfo full_pipeline_layout_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = set_layout_count,
+            .pSetLayouts = set_layouts,
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &push_range
+        };
+
+        if(vkCreatePipelineLayout(vulkan_context->device, &empty_pipeline_layout_info, NULL, &programs->empty_pipeline_layout) != VK_SUCCESS) {
+            MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to create empty pipeline layout"));
+        }
+        if(vkCreatePipelineLayout(vulkan_context->device, &full_pipeline_layout_info, NULL, &programs->full_pipeline_layout) != VK_SUCCESS) {
+            MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to full pipeline layout"));
         }
     }
 
@@ -510,8 +541,9 @@ b32 createShaderPrograms(RenderContext *render_context, u32 program_count, const
             }
 
             /* create pipeline */
+            VkPipelineLayout pipeline_layout = (program_infos[i].flags & SHADER_PROGRAM_FLAG_EMPTY_LAYOUT) ? programs->empty_pipeline_layout : programs->full_pipeline_layout;
             shader_programs[i].pipeline = createGraphicsPipeline(
-                vulkan_context->device, shader_programs[i].vertex_shader, shader_programs[i].fragment_shader, programs->pipeline_layout,
+                vulkan_context->device, shader_programs[i].vertex_shader, shader_programs[i].fragment_shader, pipeline_layout,
                 &render_context->render_settings.color_format, 1, render_context->render_settings.depth_format, program_infos[i].flags
             );
             if(!shader_programs[i].pipeline) {
@@ -1184,6 +1216,12 @@ b32 createBuffers_DescreteModel(
         }
     }
 
+    /* important notes:
+        1. host_const_storage_buffers goes on init stack before push, because buffers will be destroyed later, referenced from heritage. 
+        2. host_mutable_storage_regions, host_mutable_storage_buffers, device_storage_buffers 
+            are just double references to members of Buffers struct, to avoid double pointer dereferencing.
+        3. host_temp_vram is host visible device memory, used for storing host-immutable storage cpu buffers, to transfer initial data. */
+
     String log_str = STACK_STR(256);
 
     VulkanContext *vulkan_context = render_context->vulkan_context;
@@ -1447,7 +1485,7 @@ b32 createBuffers_DescreteModel(
             }
 
             if(uniform_buffer_info->data) {
-                copyMemory((u8 *)host_temp_vram_map + buffers->host_uniform_region.offset, uniform_buffer_info->data, uniform_buffer_info->size);
+                copyMemory((u8 *)render_context->buffers_host_vram_map + buffers->host_uniform_region.offset, uniform_buffer_info->data, uniform_buffer_info->size);
             }
         }
         
@@ -1690,6 +1728,218 @@ b32 createBuffers_IntegratedModel(
         }
     }
 
+    return TRUE;
+}
+
+/*======================================================================
+    DESCRIPTORS
+  ======================================================================*/
+/* We have 4 descriptor sets that will be available by default:
+    frame set:
+        [0] uniform buffer
+        [1] color screen image
+        [2] depth screen image
+
+    storage buffer set:
+        [0] storage buffer[0]
+        [1] storage buffer[1]
+        ...
+        [n] storage buffer[n]
+
+    IMPORTANT TO KNOW:
+        1. if descriptor set was empty, it doesnt exist.
+*/
+
+
+b32 createDescriptors(RenderContext *render_context, Stack *init_stack) {
+    VulkanContext *vulkan_context = render_context->vulkan_context;
+    Descriptors *descriptors = &render_context->descriptors;
+
+    pushStack(init_stack);
+
+    /* DESCRIPTOR POOL */ {
+        u32 pool_size_count = 0;
+        VkDescriptorPoolSize pool_sizes[4] = {0};
+        /* fill pool sizes */
+        if(render_context->buffers.host_uniform_buffer) {
+            pool_sizes[pool_size_count++] = (VkDescriptorPoolSize) {
+                .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .descriptorCount = 1
+            };
+        }
+        if(render_context->buffers.storage_buffer_count != 0) {
+            pool_sizes[pool_size_count++] = (VkDescriptorPoolSize) {
+                .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = render_context->buffers.storage_buffer_count
+            };
+        }
+
+        /* create descriptor pool */
+        const VkDescriptorPoolCreateInfo pool_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .poolSizeCount = pool_size_count,
+            .pPoolSizes = pool_sizes,
+            .maxSets = 4
+        };
+        if(vkCreateDescriptorPool(vulkan_context->device, &pool_info, NULL, &descriptors->descriptor_pool) != VK_SUCCESS) {
+            MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to crate descriptor pool"));
+            return FALSE;
+        }
+    }
+    
+    /* these are per set not per layout */
+    u32 ordered_layout_count = 0;
+    VkDescriptorSetLayout ordered_layouts[4] = {0};
+    /* these are per layout not per set*/
+    u32 frame_id = U32_MAX;
+    u32 storage_id = U32_MAX;
+
+    /* SET LAYOUTS */ {
+        /* FRAME SET */
+        if(render_context->buffers.host_uniform_buffer) {
+            const VkDescriptorSetLayoutBinding frame_bindings[] = {
+                (VkDescriptorSetLayoutBinding) {
+                    .binding = 0,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_ALL
+                }
+            };
+            const VkDescriptorSetLayoutCreateInfo frame_layout_info = {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                .bindingCount = ARRAY_SIZE(frame_bindings),
+                .pBindings = frame_bindings
+            };
+            if(vkCreateDescriptorSetLayout(vulkan_context->device, &frame_layout_info, NULL, &descriptors->frame_layout) != VK_SUCCESS) {
+                MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to create descriptor frame layout"));
+                return FALSE;
+            }
+            frame_id = ordered_layout_count;
+            ordered_layouts[ordered_layout_count++] = descriptors->frame_layout;
+        }
+        /* STORAGE BUFFER SET */
+        if(render_context->buffers.storage_buffer_count != 0) {
+            const u32 storage_buffer_count = render_context->buffers.storage_buffer_count;
+            /* normal situation is < 16 descriptors for storage buffers in a set */
+            if(storage_buffer_count > 16) {
+                MSG_WARNING(render_context->msg_callback, &CONST_STRING("storage buffer descriptors count id more that 16"));
+            }
+
+            /* allocate bindings array on init satck */
+            VkDescriptorSetLayoutBinding *storage_buffers_layout_bindings = allocateStack(init_stack, sizeof(VkDescriptorSetLayoutBinding) * storage_buffer_count, 0);
+            if(!storage_buffers_layout_bindings) {
+                MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate storage_buffers_layout_bindings array"));
+                return FALSE;
+            }
+
+            for(u32 i = 0; i < storage_buffer_count; i++) {
+                storage_buffers_layout_bindings[i] = (VkDescriptorSetLayoutBinding) {
+                    .binding = i,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_ALL
+                };
+            }
+
+            const VkDescriptorSetLayoutCreateInfo frame_layout_info = {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                .bindingCount = storage_buffer_count,
+                .pBindings = storage_buffers_layout_bindings
+            };
+            if(vkCreateDescriptorSetLayout(vulkan_context->device, &frame_layout_info, NULL, &descriptors->storage_buffers_layout) != VK_SUCCESS) {
+                MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to create descriptor set 1 layout"));
+                return FALSE;
+            }
+            storage_id = ordered_layout_count;
+            ordered_layouts[ordered_layout_count++] = descriptors->storage_buffers_layout;
+        }
+
+    }
+
+    /* DESCRIPTOR SETS */ {
+        const VkDescriptorSetAllocateInfo descriptors_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = descriptors->descriptor_pool,
+            .descriptorSetCount = ordered_layout_count,
+            .pSetLayouts = ordered_layouts
+        };
+        descriptors->descriptor_set_count = ordered_layout_count;
+        if(vkAllocateDescriptorSets(vulkan_context->device, &descriptors_info, descriptors->descriptor_sets) != VK_SUCCESS) {
+            MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate descriptor sets"));
+            return FALSE;
+        }
+    }
+
+    /* WRITE DESCRIPTORS */ {
+        /* compute write arrays size */
+        u32 descriptor_write_count = ((render_context->buffers.host_uniform_buffer) ? 1 : 0) + render_context->buffers.storage_buffer_count;
+        u32 buffer_info_count = ((render_context->buffers.host_uniform_buffer) ? 1 : 0) + render_context->buffers.storage_buffer_count;
+        
+        /* allocate write info arrays */
+        void *write_allocation = allocateStack(init_stack, sizeof(VkWriteDescriptorSet) * descriptor_write_count + sizeof(VkDescriptorBufferInfo) * buffer_info_count, 0);
+        if(!write_allocation) {
+            MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to allocate write_allocation"));
+            return FALSE;
+        }
+        VkWriteDescriptorSet *descriptor_writes = (VkWriteDescriptorSet *)write_allocation;
+        VkDescriptorBufferInfo *buffer_infos = (buffer_info_count != 0) ? (VkDescriptorBufferInfo *)((u8 *)write_allocation + sizeof(VkWriteDescriptorSet) * descriptor_write_count) : NULL;
+
+        u32 descriptor_write_i = 0;
+        u32 buffer_info_count_i = 0;
+
+        /* uniform buffer write */
+        if(render_context->buffers.host_uniform_buffer) {
+            VkBuffer uniform_buffer = NULL;
+            uniform_buffer = (vulkan_context->device_model == DEVICE_MODEL_DESCRETE) ? render_context->buffers.device_uniform_buffer : uniform_buffer;
+            uniform_buffer = (vulkan_context->device_model == DEVICE_MODEL_INTEGRATED) ? render_context->buffers.host_uniform_buffer : uniform_buffer;
+        
+            VkDescriptorBufferInfo *buffer_info = &buffer_infos[buffer_info_count_i++];
+            *buffer_info = (VkDescriptorBufferInfo) {
+                .buffer = uniform_buffer,
+                .offset = 0,
+                .range = VK_WHOLE_SIZE
+            };
+
+            descriptor_writes[descriptor_write_i++] = (VkWriteDescriptorSet) {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .descriptorCount = 1,
+                .dstSet = descriptors->descriptor_sets[frame_id],
+                .dstBinding = 0,
+                .pBufferInfo = buffer_info
+            };
+        }
+        if(render_context->buffers.storage_buffer_count != 0) {
+            const u32 storage_buffer_count = render_context->buffers.storage_buffer_count;
+
+            VkBuffer *storage_buffers = NULL;
+            storage_buffers = (vulkan_context->device_model == DEVICE_MODEL_DESCRETE) ? render_context->buffers.device_storage_buffers : storage_buffers;
+            storage_buffers = (vulkan_context->device_model == DEVICE_MODEL_INTEGRATED) ? render_context->buffers.device_storage_buffers : storage_buffers;
+
+            for(u32 i = 0; i < storage_buffer_count; i++) {
+                VkDescriptorBufferInfo *buffer_info = &buffer_infos[buffer_info_count_i++];
+                *buffer_info = (VkDescriptorBufferInfo) {
+                    .buffer = storage_buffers[i],
+                    .offset = 0,
+                    .range = VK_WHOLE_SIZE
+                };
+
+                descriptor_writes[descriptor_write_i++] = (VkWriteDescriptorSet) {
+                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .descriptorCount = 1,
+                    .dstSet = descriptors->descriptor_sets[storage_id],
+                    .dstBinding = 0,
+                    .pBufferInfo = buffer_info
+                };
+            }
+        }
+
+        vkUpdateDescriptorSets(vulkan_context->device, descriptor_write_count, descriptor_writes, 0, NULL);
+    }
+
+    popStack(init_stack);
+    
     return TRUE;
 }
 
@@ -1941,6 +2191,15 @@ RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderCo
         }
     }
 
+    /* DESCRIPTORS */ {
+        if(info->uniform_buffer || info->storage_buffer_count != 0) {
+            if(!createDescriptors(context, &init_stack)) {
+                MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create descriptors"));
+                return FALSE;
+            }
+        }
+    }
+
     /* CLEANUP */ {
         if(vulkan_context->device_model == DEVICE_MODEL_DESCRETE) {
             /* first wait for it then destroy */
@@ -1982,6 +2241,24 @@ RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderCo
 void destroyRenderContext(RenderContext *context) {
     VulkanContext* vulkan_context = context->vulkan_context;
 
+    /* DESCRIPTORS */ {
+        if(context->descriptors.descriptor_pool) {
+            if(context->descriptors.frame_layout) {
+                vkDestroyDescriptorSetLayout(vulkan_context->device, context->descriptors.frame_layout, NULL);
+            }
+            if(context->descriptors.storage_buffers_layout) {
+                vkDestroyDescriptorSetLayout(vulkan_context->device, context->descriptors.storage_buffers_layout, NULL);
+            }
+            if(context->descriptors.sampled_images_layout) {
+                vkDestroyDescriptorSetLayout(vulkan_context->device, context->descriptors.sampled_images_layout, NULL);
+            }
+            if(context->descriptors.storage_images_layout) {
+                vkDestroyDescriptorSetLayout(vulkan_context->device, context->descriptors.storage_images_layout, NULL);
+            }
+            vkDestroyDescriptorPool(vulkan_context->device, context->descriptors.descriptor_pool, NULL);
+        }
+    }
+
     /* SHADER PROGRAMS */ {
         const u32 program_count = context->shader_programs.program_count;
         ShaderProgram *shader_programs = context->shader_programs.shader_programs;
@@ -1995,10 +2272,11 @@ void destroyRenderContext(RenderContext *context) {
             }
             vkDestroyPipeline(vulkan_context->device, shader_programs[i].pipeline, NULL);
         }
-        vkDestroyPipelineLayout(vulkan_context->device, context->shader_programs.pipeline_layout, NULL);
+        vkDestroyPipelineLayout(vulkan_context->device, context->shader_programs.empty_pipeline_layout, NULL);
+        vkDestroyPipelineLayout(vulkan_context->device, context->shader_programs.full_pipeline_layout, NULL);
     }
 
-    /* UNIFORMS */ {
+    /* BUFFERS */ {
         /* host and device buffers */
         if(vulkan_context->device_model == DEVICE_MODEL_DESCRETE) {
             const u32 device_storage_buffer_count = context->buffers.storage_buffer_count;

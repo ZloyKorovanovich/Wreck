@@ -81,6 +81,9 @@ void freeVram(VulkanContext *vulkan_context, Vram *vram);
 #define SHADER_ENTRY_FRAGMENT "fragmentMain"
 #define SHADER_ENTRY_COMPUTE "computeMain"
 
+#define DESCRIPTOR_SET_COUNT (4)
+#define PUSH_CONSTANT_RANGE (16)
+
 typedef struct {
     VkColorSpaceKHR color_space;
     VkFormat color_format;
@@ -125,7 +128,8 @@ typedef struct {
 
 typedef struct {
     /* all pointer allocations are made on reasouce_arena */
-    VkPipelineLayout pipeline_layout;
+    VkPipelineLayout empty_pipeline_layout;
+    VkPipelineLayout full_pipeline_layout;
     ShaderProgram *shader_programs;
     u32 *resources_usage;
     u32 program_count;
@@ -171,6 +175,18 @@ typedef struct {
     u32 mutable_storage_buffer_count;
 } Buffers;
 
+typedef struct {
+    VkDescriptorPool descriptor_pool;
+    VkDescriptorSet descriptor_sets[DESCRIPTOR_SET_COUNT];
+    
+    VkDescriptorSetLayout frame_layout;
+    VkDescriptorSetLayout storage_buffers_layout;
+    VkDescriptorSetLayout sampled_images_layout;
+    VkDescriptorSetLayout storage_images_layout;
+    
+    u32 descriptor_set_count; /* IMPORTANT: this is not the way to index layouts*/
+} Descriptors;
+
 /* context of render queue */
 struct RenderContext {
     VulkanContext *vulkan_context;
@@ -178,22 +194,22 @@ struct RenderContext {
     /* screen */
     RenderSettings render_settings;
     ScreenImages screen_images;
-    /* shader shader_programs */
+    /* resources */
     Programs shader_programs;
     Meshes render_meshes;
     Buffers buffers;
-    /* callback for logs and errors */
-    MsgCallback_pfn msg_callback;
+    Descriptors descriptors;
     /* memory */
     Vram images_device_vram;
     Vram mesh_device_vram;
-    
     /* buffers are uniform buffer and storage buffers, that are used for object description, like transform matrices, etc.*/
     Vram buffers_device_vram; /* stores uniform buffer, host mutable device stroage buffers and host immutable storage buffers */
     Vram buffers_host_vram; /* stores uniform src buffer and host mutable src stroagr buffers */
     void *buffers_host_vram_map; /* map for buffers_host_vram */
     /* commands */
     VkCommandPool command_pool;
+    /* callback for logs and errors */
+    MsgCallback_pfn msg_callback;
 };
 
 #define MAX_COLOR_ATTACHMENTS (8)

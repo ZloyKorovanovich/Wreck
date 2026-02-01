@@ -68,7 +68,8 @@ typedef enum {
     SHADER_PRORGAM_FLAG_USE_VERTEX_NORMAL = 0x2,
     SHADER_PRORGAM_FLAG_USE_VERTEX_UV = 0x4,
     SHADER_PROGRAM_FLAG_LINE_MODE = 0x8,
-    SHADER_PROGRAM_FLAG_POINT_MODE = 0x10
+    SHADER_PROGRAM_FLAG_POINT_MODE = 0x10,
+    SHADER_PROGRAM_FLAG_EMPTY_LAYOUT = 0x20
 } ShaderProgramFlags;
 
 typedef struct {
@@ -90,7 +91,6 @@ typedef struct {
 
 typedef struct {
     void *data;
-    u64 stride;
     u64 size;
 } StorageBufferInfo;
 

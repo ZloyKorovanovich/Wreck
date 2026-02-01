@@ -101,11 +101,10 @@ const MeshInfo c_mesh_infos[] = {
 const StorageBufferInfo c_storage_buffers[] = {
     [STORAGE_BUFFER_UNIFORM_SCALE] = (StorageBufferInfo) {
         .size = sizeof(UniformScaleObject) * 2,
-        .stride = sizeof(UniformScaleObject)
+        .data = (UniformScaleObject[2]){0}
     },
     [STORAGE_BUFFER_CUBE_GRID] = (StorageBufferInfo) {
         .size = sizeof(UniformScaleObject) * 2,
-        .stride = sizeof(UniformScaleObject),
         .data = (UniformScaleObject[2]){0}
     }
 };
@@ -157,8 +156,8 @@ i32 main(i32 argc, char **argv) {
         /* buffers */
         .uniform_buffer = &c_uniform_buffer_info,
         .storage_buffers = c_storage_buffers,
-        .storage_host_mutable_buffer_count = 0,
-        .storage_buffer_count = 0
+        .storage_host_mutable_buffer_count = STORAGE_BUFFER_MUTABLE_COUNT,
+        .storage_buffer_count = STORAGE_BUFFER_COUNT
     };
     RenderContext *render_context = createRenderContext(&allocateContext, &render_info);
     if(!render_context) {

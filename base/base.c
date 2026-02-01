@@ -31,14 +31,14 @@
         return TRUE;
     }
 
-    void *allocateArena(Arena *arena, u64 size, u64 aligment) {
+    void *allocateArena(Arena *arena, u64 size, u64 alignment) {
         if(size == 0) {
             return NULL;
         }
-        /* default aligment if aligment == 0 */
-        aligment = (aligment == 0) ? DEFAULT_ALIGMENT : aligment;
+        /* default alignment if alignment == 0 */
+        alignment = (alignment == 0) ? DEFAULT_ALIGMENT : alignment;
         /* calculate where user allocation will begin */
-        u64 alloc_offset = ALIGN(((u64)arena->end - (u64)arena->begin), aligment);
+        u64 alloc_offset = ALIGN(((u64)arena->end - (u64)arena->begin), alignment);
         /* if exceed virtual size, things are very bad */
         if(alloc_offset + size > arena->virtual_size) {
             return NULL;
@@ -103,14 +103,14 @@
         return TRUE;
     }
 
-    void *allocateStack(Stack *stack, u64 size, u64 aligment) {
+    void *allocateStack(Stack *stack, u64 size, u64 alignment) {
         if(size == 0) {
             return NULL;
         }
-        /* default aligment if aligment == 0 */
-        aligment = (aligment == 0) ? DEFAULT_ALIGMENT : aligment;
+        /* default alignment if alignment == 0 */
+        alignment = (alignment == 0) ? DEFAULT_ALIGMENT : alignment;
         /* calculate where user allocation will begin */
-        u64 alloc_offset = ALIGN(((u64)stack->end - (u64)stack->begin), aligment);
+        u64 alloc_offset = ALIGN(((u64)stack->end - (u64)stack->begin), alignment);
         /* if exceed virtual size, things are very bad */
         if(alloc_offset + size > stack->virtual_size) {
             return NULL;
@@ -176,12 +176,14 @@
 
 /* MEMORY */
 
-void setMemory(void *dst, const void *scr, u64 size, u64 count) {
+void setMemory(void *dst, const void *src, u64 size, u64 count) {
     
 }
 
 void copyMemory(void *dst, const void *src, u64 size) {
-    
+    for(u64 i = 0; i < size; i++) {
+        ((u8 *)dst)[i] = ((u8 *)src)[i];
+    }
 }
 
 /* STRINGS */
