@@ -72,7 +72,7 @@ const ShaderProgramInfo c_shader_programs[] = {
         .fragment_shader = CONST_STRING("out/data/triangle_f.spv")
     },
     [SHADER_PROGRAM_DEFAULT] = (ShaderProgramInfo) {
-        .flags = SHADER_PRORGAM_FLAG_USE_VERTEX_POSITION,
+        .flags = SHADER_PRORGAM_FLAG_USE_VERTEX_POSITION | SHADER_PRORGAM_FLAG_USE_VERTEX_NORMAL,
         .vertex_shader = CONST_STRING("out/data/material_v.spv"),
         .fragment_shader = CONST_STRING("out/data/material_f.spv"),
     }
@@ -134,7 +134,7 @@ i32 main(i32 argc, char **argv) {
         .name = CONST_STRING("Wreck"),
         .resolution_x = 800,
         .resolution_y = 600,
-        .flags = VULKAN_FLAG_RESIZABLE,
+        .flags = VULKAN_FLAG_RESIZABLE | VULKAN_FLAG_DEBUG,
         .msg_callback = &msgCallback
     };
     VulkanContext *vulkan_context = createVulkanContext(&allocateContext, &vulkan_info);

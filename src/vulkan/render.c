@@ -342,9 +342,9 @@ VkPipeline createGraphicsPipeline(
 
     VkPipelineVertexInputStateCreateInfo vertex_input_state = (VkPipelineVertexInputStateCreateInfo) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-        .vertexAttributeDescriptionCount = vertex_binding_count,
-        .vertexBindingDescriptionCount = vertex_attribute_count,
+        .vertexAttributeDescriptionCount = vertex_attribute_count,
         .pVertexAttributeDescriptions = vertex_attributes,
+        .vertexBindingDescriptionCount = vertex_binding_count,
         .pVertexBindingDescriptions = vertex_bindings
     };
     
@@ -677,6 +677,76 @@ b32 createRawMesh(const String *file, MsgCallback_pfn msg_callback, Buffer *read
             /* fill indices of mesh */
             for(u32 i = 0; i < index_count; i++) {
                 mesh->indices[i] = (u16)indices_v1[i];
+            }
+        }
+       
+        return TRUE;
+    }
+    /* second version of mesh */
+    if(file_version == 2) {
+        typedef struct {
+            f32 position[3];
+            f32 normal[3];
+            f32 texcoord[2];
+        } VertexV2;
+        typedef u16 IndexV2;
+
+        /* get vertex and index count */
+        const u32 vertex_count = *(u32 *)((u8 *)read_buffer->buffer + 4);
+        const u32 index_count = *(u32 *)((u8 *)read_buffer->buffer + 8);
+        if(vertex_count == 0 || index_count == 0) {
+            MSG_ERROR(msg_callback, &TRACED_STR("mesh file contain 0 length arrays"));
+            return FALSE;
+        }
+
+        /* vertex and index arrays in buffer */
+        VertexV2 *vertices_v2 = (VertexV2 *)((u8 *)read_buffer->buffer + 16);
+        IndexV2 *indices_v2 = (IndexV2 *)((u8 *)read_buffer->buffer + 16 + sizeof(VertexV2) * vertex_count);
+
+        /* allocate raw mesh arrays */
+        *mesh = (RawMesh) {
+            .vertices = allocateArena(mesh_arena, sizeof(Vertex) * vertex_count, 16),
+            .indices = allocateArena(mesh_arena, sizeof(u16) * index_count, 16),
+            .vertex_count = vertex_count,
+            .index_count = index_count
+        };
+        /* check if allocation succeed */
+        if(!mesh->vertices) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate raw mesh vertices"));
+            return FALSE;
+        }
+        if(!mesh->indices) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate raw mesh indices"));
+            return FALSE;
+        }
+
+        /* VERTEX IMPLEMENTATION DEPENDENT */ {
+            /* fill vertices of mesh */
+            for(u32 i = 0; i < vertex_count; i++) {
+                mesh->vertices[i] = (Vertex) {
+                    .position = {
+                        vertices_v2[i].position[0],
+                        vertices_v2[i].position[1],
+                        vertices_v2[i].position[2],
+                        1.0
+                    },
+                    .normal = {
+                        vertices_v2[i].normal[0],
+                        vertices_v2[i].normal[1],
+                        vertices_v2[i].normal[2],
+                        0.0
+                    },
+                    .uv = {
+                        vertices_v2[i].texcoord[0],
+                        vertices_v2[i].texcoord[1],
+                        1.0,
+                        1.0
+                    }
+                };
+            }
+            /* fill indices of mesh */
+            for(u32 i = 0; i < index_count; i++) {
+                mesh->indices[i] = (u16)indices_v2[i];
             }
         }
        

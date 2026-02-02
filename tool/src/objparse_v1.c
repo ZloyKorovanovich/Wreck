@@ -121,7 +121,7 @@ i32 main(i32 argc, char **argv) {
     }
     
     Arena arena = (Arena){0};
-    if(!createArena(&arena, 1024 * 1024 * 256, 1024 * 64)) {
+    if(!createArena(&arena, (1024U * 1024U * 1024U * 8U), 1024 * 64)) {
         printConsole(&CONST_STRING("failed to create arena"));
         return -1;
     }
