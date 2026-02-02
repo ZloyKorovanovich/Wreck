@@ -39,16 +39,16 @@ typedef struct {
 } UniformBuffer;
 
 typedef struct {
-    f32 position[4];
-    f32 rotation[4];
-} UniformScaleObject;
+    f32 color[4];
+} Material;
 
+typedef struct {
+    u32 ids[4];
+} PushConstants;
 
 typedef enum {
     SHADER_PROGRAM_TRIANGLE = 0,
     SHADER_PROGRAM_DEFAULT = 1,
-    SHADER_PROGRAM_BODY = 2,
-    SHADER_PROGRAM_EYE = 3,
     SHADER_PROGRAM_COUNT
 } ShaderPorgrams;
 
@@ -60,9 +60,8 @@ typedef enum {
 
 typedef enum {
     STORAGE_BUFFER_UNIFORM_SCALE = 0,
-    STORAGE_BUFFER_MUTABLE_COUNT,
-    STORAGE_BUFFER_CUBE_GRID = 1,
-    STORAGE_BUFFER_COUNT
+    STORAGE_BUFFER_MUTABLE_COUNT = 0,
+    STORAGE_BUFFER_COUNT = 1
 } StorageBuffers;
 
 
@@ -74,18 +73,8 @@ const ShaderProgramInfo c_shader_programs[] = {
     },
     [SHADER_PROGRAM_DEFAULT] = (ShaderProgramInfo) {
         .flags = SHADER_PRORGAM_FLAG_USE_VERTEX_POSITION,
-        .vertex_shader = CONST_STRING("out/data/default_v.spv"),
-        .fragment_shader = CONST_STRING("out/data/default_f.spv"),
-    },
-    [SHADER_PROGRAM_BODY] = (ShaderProgramInfo) {
-        .flags = SHADER_PRORGAM_FLAG_USE_VERTEX_POSITION,
-        .vertex_shader = CONST_STRING("out/data/body_v.spv"),
-        .fragment_shader = CONST_STRING("out/data/body_f.spv")
-    },
-    [SHADER_PROGRAM_EYE] = (ShaderProgramInfo) {
-        .flags = SHADER_PRORGAM_FLAG_USE_VERTEX_POSITION,
-        .vertex_shader = CONST_STRING("out/data/eye_v.spv"),
-        .fragment_shader = CONST_STRING("out/data/eye_f.spv")
+        .vertex_shader = CONST_STRING("out/data/material_v.spv"),
+        .fragment_shader = CONST_STRING("out/data/material_f.spv"),
     }
 };
 
@@ -100,27 +89,38 @@ const MeshInfo c_mesh_infos[] = {
 
 const StorageBufferInfo c_storage_buffers[] = {
     [STORAGE_BUFFER_UNIFORM_SCALE] = (StorageBufferInfo) {
-        .size = sizeof(UniformScaleObject) * 2,
-        .data = (UniformScaleObject[2]){0}
-    },
-    [STORAGE_BUFFER_CUBE_GRID] = (StorageBufferInfo) {
-        .size = sizeof(UniformScaleObject) * 2,
-        .data = (UniformScaleObject[2]){0}
+        .size = sizeof(Material) * 2,
+        .data = (Material[2]){
+            (Material){0.2, 0.6, 0.3, 1.0},
+            (Material){0.02, 0.02, 0.02, 1.0}
+        }
     }
 };
 
 const UniformBufferInfo c_uniform_buffer_info = {
     .size = sizeof(UniformBuffer),
-    .data = (UniformBuffer[]){(UniformBuffer){0}}
+    .data = (UniformBuffer[]){(UniformBuffer){
+        .screen_params = {1.0, 1.0, 1.0, -1.0}
+    }}
 };
 
 
 void updateCallback(UpdateInfo *info, RenderCmd *render_cmd) {
-    cmdBeginRendering(render_cmd, 1, (u32[]){RENDER_ATTACHMENT_SCREEN_COLOR_ID}, RENDER_ATTACHMENT_SCREEN_DEPTH_ID); 
-    cmdDrawProcedural(render_cmd, SHADER_PROGRAM_TRIANGLE, 18, 1);
-    cmdDrawMesh(render_cmd, SHADER_PROGRAM_DEFAULT, MESH_BODY, 1);
-    cmdDrawMesh(render_cmd, SHADER_PROGRAM_DEFAULT, MESH_EYE, 1);
-    cmdEndRendering(render_cmd);
+    *(UniformBuffer *)cmdWriteHostUniformBuffer(render_cmd) = (UniformBuffer) {
+        .screen_params = {(f32)info->res_x, (f32)info->res_y, 1.0, -1.0},
+        .time = {0.0, 0.0, 0.0, 0.0}
+    };
+    cmdTransferUniformBuffer(render_cmd, sizeof(UniformBuffer));
+
+    cmdBeginRendering(render_cmd, 1, (u32[]){RENDER_ATTACHMENT_SCREEN_COLOR_ID}, RENDER_ATTACHMENT_SCREEN_DEPTH_ID); {
+        cmdDrawProcedural(render_cmd, SHADER_PROGRAM_TRIANGLE, 18, 1);
+
+        cmdPushContsants(render_cmd, &(PushConstants[]){{0, U32_MAX, U32_MAX, U32_MAX}}, sizeof(PushConstants));
+        cmdDrawMesh(render_cmd, SHADER_PROGRAM_DEFAULT, MESH_BODY, 1);
+
+        cmdPushContsants(render_cmd, &(PushConstants[]){{1, U32_MAX, U32_MAX, U32_MAX}}, sizeof(PushConstants));
+        cmdDrawMesh(render_cmd, SHADER_PROGRAM_DEFAULT, MESH_EYE, 1);
+    } cmdEndRendering(render_cmd);
 }
 
 i32 main(i32 argc, char **argv) {
@@ -134,7 +134,7 @@ i32 main(i32 argc, char **argv) {
         .name = CONST_STRING("Wreck"),
         .resolution_x = 800,
         .resolution_y = 600,
-        .flags = VULKAN_FLAG_RESIZABLE | VULKAN_FLAG_DEBUG,
+        .flags = VULKAN_FLAG_RESIZABLE,
         .msg_callback = &msgCallback
     };
     VulkanContext *vulkan_context = createVulkanContext(&allocateContext, &vulkan_info);
@@ -157,7 +157,8 @@ i32 main(i32 argc, char **argv) {
         .uniform_buffer = &c_uniform_buffer_info,
         .storage_buffers = c_storage_buffers,
         .storage_host_mutable_buffer_count = STORAGE_BUFFER_MUTABLE_COUNT,
-        .storage_buffer_count = STORAGE_BUFFER_COUNT
+        .storage_buffer_count = STORAGE_BUFFER_COUNT,
+        .push_constants_size = sizeof(PushConstants)
     };
     RenderContext *render_context = createRenderContext(&allocateContext, &render_info);
     if(!render_context) {

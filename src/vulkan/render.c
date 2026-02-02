@@ -446,7 +446,7 @@ VkPipeline createGraphicsPipeline(
 }
 
 /* modifies programs struct of render_context */
-b32 createShaderPrograms(RenderContext *render_context, u32 program_count, const ShaderProgramInfo *program_infos, Stack *init_stack) {
+b32 createShaderPrograms(RenderContext *render_context, u64 push_constants_size, u32 program_count, const ShaderProgramInfo *program_infos, Stack *init_stack) {
     pushStack(init_stack);
     
     String log_str = {
@@ -475,7 +475,7 @@ b32 createShaderPrograms(RenderContext *render_context, u32 program_count, const
 
         const VkPushConstantRange push_range = {
             .offset = 0,
-            .size = PUSH_CONSTANT_RANGE,
+            .size = push_constants_size,
             .stageFlags = VK_SHADER_STAGE_ALL
         };
         const VkPipelineLayoutCreateInfo empty_pipeline_layout_info = {
@@ -1914,7 +1914,7 @@ b32 createDescriptors(RenderContext *render_context, Stack *init_stack) {
 
             VkBuffer *storage_buffers = NULL;
             storage_buffers = (vulkan_context->device_model == DEVICE_MODEL_DESCRETE) ? render_context->buffers.device_storage_buffers : storage_buffers;
-            storage_buffers = (vulkan_context->device_model == DEVICE_MODEL_INTEGRATED) ? render_context->buffers.device_storage_buffers : storage_buffers;
+            storage_buffers = (vulkan_context->device_model == DEVICE_MODEL_INTEGRATED) ? render_context->buffers.host_storage_buffers : storage_buffers;
 
             for(u32 i = 0; i < storage_buffer_count; i++) {
                 VkDescriptorBufferInfo *buffer_info = &buffer_infos[buffer_info_count_i++];
@@ -2182,20 +2182,20 @@ RenderContext *createRenderContext(Allocate_pfn context_allocate, const RenderCo
         }
     }
 
-    /* PROGRAMS */ {
-        if(info->program_count != 0) {
-            if(!createShaderPrograms(context, info->program_count, info->programs, &init_stack)) {
-                MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create shader shader_programs"));
-                return NULL;
-            }
-        }
-    }
-
     /* DESCRIPTORS */ {
         if(info->uniform_buffer || info->storage_buffer_count != 0) {
             if(!createDescriptors(context, &init_stack)) {
                 MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create descriptors"));
                 return FALSE;
+            }
+        }
+    }
+
+    /* PROGRAMS */ {
+        if(info->program_count != 0) {
+            if(!createShaderPrograms(context, info->push_constants_size, info->program_count, info->programs, &init_stack)) {
+                MSG_ERROR(context->msg_callback, &TRACED_STR("failed to create shader shader_programs"));
+                return NULL;
             }
         }
     }
@@ -2466,6 +2466,12 @@ b32 runRenderLoop(RenderContext *render_context, RenderUpdate_pfn update_callbac
                 MSG_ERROR(render_context->msg_callback, &TRACED_STR("failed to begin command buffer"));
                 return FALSE;
             }
+
+            /* bind descriptor sets that we use for all frame */
+            vkCmdBindDescriptorSets(
+                command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, render_context->shader_programs.full_pipeline_layout, 
+                0, render_context->descriptors.descriptor_set_count, render_context->descriptors.descriptor_sets, 0, NULL
+            );
 
             /* transition screen image state */
             const VkImageMemoryBarrier image_top_barrier = {

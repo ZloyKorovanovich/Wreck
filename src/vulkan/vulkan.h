@@ -128,6 +128,7 @@ typedef struct {
 
 typedef struct {
     /* all pointer allocations are made on reasouce_arena */
+    u64 push_constants_size; /* push constants are generally used to index storage buffers information */
     VkPipelineLayout empty_pipeline_layout;
     VkPipelineLayout full_pipeline_layout;
     ShaderProgram *shader_programs;

@@ -4,6 +4,45 @@
     GRAPHICS
   ======================================================================*/
 
+void *cmdWriteHostUniformBuffer(RenderCmd *cmd) {
+    RenderContext *render_context = cmd->render_context;
+    /* we always write to host uniform buffer, so lest check if it exists */
+    return (render_context->buffers.host_uniform_buffer) ? (u8 *)render_context->buffers_host_vram_map + render_context->buffers.host_uniform_region.offset : NULL;
+}
+
+void cmdTransferUniformBuffer(RenderCmd *cmd, u64 size) {
+    RenderContext *render_context = cmd->render_context;
+    /* we always write to host uniform buffer, so lest check if it exists */
+    if(render_context->buffers.device_uniform_buffer) {
+        const VkBufferCopy buffer_copy = {
+            .srcOffset = 0,
+            .size = size
+        };
+        vkCmdCopyBuffer(cmd->command_buffer, render_context->buffers.host_uniform_buffer, render_context->buffers.device_uniform_buffer, 1, &buffer_copy);
+        
+        const VkBufferMemoryBarrier buffer_barrier = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+            .buffer = render_context->buffers.device_uniform_buffer,
+            .offset = 0,
+            .size = size,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT
+        };
+        vkCmdPipelineBarrier(
+            cmd->command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+            0, NULL,
+            1, &buffer_barrier,
+            0, NULL
+        );
+    }
+}
+
+void cmdPushContsants(RenderCmd *cmd, const void *constants, u64 size) {
+    RenderContext *render_context = cmd->render_context;
+    vkCmdPushConstants(cmd->command_buffer, render_context->shader_programs.full_pipeline_layout, VK_SHADER_STAGE_ALL, 0, size, constants);
+}
+
 void cmdBeginRendering(RenderCmd *cmd, u32 color_count, u32 *color_ids, u32 depth_id) {
     u32 res_x = 0;
     u32 res_y = 0;

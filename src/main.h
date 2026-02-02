@@ -106,6 +106,8 @@ typedef struct {
     u32 mesh_count; 
     u32 storage_buffer_count; /* total storage buffer count */
     u32 storage_host_mutable_buffer_count; /* should be not greater than storage_buffer_count*/
+
+    u64 push_constants_size;
     /* callbacks */
     MsgCallback_pfn msg_callback;
 } RenderContextInfo;
@@ -116,6 +118,10 @@ b32 runRenderLoop(RenderContext *render_context, RenderUpdate_pfn update_callbac
 
 #define RENDER_ATTACHMENT_SCREEN_COLOR_ID (U32_MAX - 1)
 #define RENDER_ATTACHMENT_SCREEN_DEPTH_ID (U32_MAX - 2)
+
+void *cmdWriteHostUniformBuffer(RenderCmd *cmd);
+void cmdTransferUniformBuffer(RenderCmd *cmd, u64 size);
+void cmdPushContsants(RenderCmd *cmd, const void *constants, u64 size);
 
 void cmdBeginRendering(RenderCmd *cmd, u32 color_count, u32 *color_ids, u32 depth_id);
 void cmdEndRendering(RenderCmd *cmd);
