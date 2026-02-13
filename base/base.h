@@ -1,6 +1,10 @@
 #ifndef _BASE_INCLUDED
 #define _BASE_INCLUDED
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 /*======================================================================
     TYPES
   ======================================================================*/
@@ -37,12 +41,17 @@ typedef unsigned long dwordx;
 typedef unsigned long long qword;
 
 typedef unsigned b32;
-#define TRUE (1)
-#define FALSE (0)
+#ifndef _WIN32
+  #define TRUE (1)
+  #define FALSE (0)
+#endif
 
 #ifndef NULL
   #define NULL ((void *)0)
 #endif
+
+#define ALLOCATION_GRANULARITY (64 * 1024)
+#define MEMORY_PAGE_SIZE (4 * 1024)
 
 /*======================================================================
     LIMITS
@@ -80,6 +89,8 @@ typedef unsigned b32;
 #define F64_QNAN (0x7ff8000000000000)
 #define F64_SNAN (0x7ff8000000000001)
 
+#define INVALID_ID U32_MAX
+
 /*======================================================================
     OPERATIONS
   ======================================================================*/
@@ -95,65 +106,23 @@ typedef unsigned b32;
     ALLOCATORS
   ======================================================================*/
 
-#define DEFAULT_ALIGMENT (16)
-
-#ifndef ARENA_CUSTOM_STATS
-    #define ARENA_DEFAULT_VIRTUAL_SIZE (1024 * 1024 * 1024)
-    #define ARENA_DEFAULT_EXPANSION (1024 * 64)
-#endif
-#ifndef STACK_CUSTOM_STATS
-    #define STACK_DEFAULT_VIRTUAL_SIZE (1024 * 1024 * 256)
-    #define STACK_DEFAULT_PAGE_SIZE (1024 * 64)
-#endif
-
-
-typedef struct {
-    void *begin;
-    void *end;
-    u64 physical_size;
-    u64 virtual_size;
-    u64 expansion;
-} Arena;
-
-/* if limit is default, use limit = 0 */
-b32 createArena(Arena *arena, u64 limit, u64 expansion);
-/* if alignment is any use 0 */
-void *allocateArena(Arena *arena, u64 size, u64 alignment);
-/* clears arena, so that you can overwrite memory */
-void clearArena(Arena *arena);
-/* realses physical memory, but keeps virtual */
-b32 resetArena(Arena *arena);
-/* frees arena memory */
-b32 freeArena(Arena *arena);
-
-
 typedef struct {
     void *begin;
     void *edge;
     void *end;
-    u64 physical_size;
-    u64 virtual_size;
-    u64 expansion;
-} Stack;
+} Arena;
 
-/* if limit is default, use limit = 0 */
-b32 createStack(Stack *stack, u64 limit, u64 expansion);
-/* if alignment default any use 0 */
-void *allocateStack(Stack *stack, u64 size, u64 alignment);
-/* saves current edge and sets edge to end pointer */
-void *pushStack(Stack *stack);
-/* the oposite of push */
-void *popStack(Stack *stack);
-/* clears everything since begin, so that you can overwrite memory */
-void clearStack(Stack *stack);
-/* realses physical memory, but keeps virtual */
-b32 resetStack(Stack *stack);
-/* frees arena memory */
-b32 freeStack(Stack *stack);
+void *allocateArena(Arena *arena, u64 size, u64 alignment, u64 *possible_size);
+void freeArena(Arena *arena);
 
 /*======================================================================
     MEMORY
   ======================================================================*/
+
+typedef struct {
+    void *begin;
+    void *end;
+} Segment;
 
 typedef void *(*Allocate_pfn)(u64 size, u64 alignment);
 
@@ -161,6 +130,11 @@ typedef struct {
     void *buffer;
     u64 size;
 } Buffer;
+
+typedef struct {
+  u64 offset;
+  u64 size;
+} BufferRegion;
 
 void setMemory(void *dst, const void *value, u64 size, u64 count);
 void copyMemory(void *dst, const void *src, u64 size);
@@ -189,6 +163,7 @@ b32 stringAddChar(String *dst, char c);
 b32 stringAddU64(String *dst, u64 num);
 b32 stringAddI64(String *dst, i64 num);
 b32 stringAddF64(String *dst, f64 num);
+b32 stringAddAddress(String *dst, u64 address);
 
 i64 stringToI64(const String *src);
 u64 stringToU64(const String *src);
@@ -218,7 +193,31 @@ b32 bufferToFile(const String *path, const Buffer *buffer);
     ASSEMBLY
   ======================================================================*/
 
-void asmCopyMemoryDwordAtomicW(void *dst, void* src, u64 count);
-void asmCopyMemoryQwordAtomicW(void *dst, void* src, u64 count);
+b32 atomicCopyMemoryWrite_dword(void *dst, void* src, u64 count);
+u32 atomicCmpExchange_dword(void *address, u32 value, u32 cmp_value);
+u32 atomicExchange_dword(void* addres, u32 value);
+
+/*======================================================================
+    MSG
+  ======================================================================*/
+
+typedef enum {
+    MSG_CODE_SUCCESS = 0,
+    MSG_CODE_ERROR = -1,
+    MSG_CODE_WARNING = 1
+} MSG_TYPE;
+
+typedef void (*MsgCallback_pfn)(i32 type, const String *msg);
+
+#define MSG_LOG(callback, msg) if(callback) {callback(MSG_CODE_SUCCESS, msg);}
+#define MSG_ERROR(callback, msg) if(callback) {callback(MSG_CODE_ERROR, msg);}
+#define MSG_WARNING(callback, msg) if(callback) {callback(MSG_CODE_WARNING, msg);}
+
+/* These stringfy look ugly, but thats the only way around :( */
+#define STRINGIFY(x) #x
+#define TOSTRING(x) STRINGIFY(x)
+#define LOCATION_TRACE " *** " __FILE__ ":" TOSTRING(__LINE__)
+
+#define TRACED_STR(str) CONST_STRING(str LOCATION_TRACE)
 
 #endif

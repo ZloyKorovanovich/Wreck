@@ -1,6 +1,11 @@
-#include "main.h"
+#include <base.h>
+#include "vulkan/vulkan.h"
 
-void msgCallback(i32 code, const String *msg) {
+void 
+msgCallback(
+    i32 code, 
+    const String *msg
+) {
     String print_str = (String) {
         .string = (char[512]){0},
         .capacity = 512
@@ -28,156 +33,50 @@ void msgCallback(i32 code, const String *msg) {
     }
 }
 
-static Arena s_context_arena = (Arena){0};
-void *allocateContext(u64 size, u64 alignment) {
-    return allocateArena(&s_context_arena, size, alignment);
-}
 
-typedef struct {
-    f32 time[4];
-    f32 screen_params[4];
-} UniformBuffer;
-
-typedef struct {
-    f32 color[4];
-} Material;
-
-typedef struct {
-    u32 ids[4];
-} PushConstants;
-
-typedef enum {
-    SHADER_PROGRAM_TRIANGLE = 0,
-    SHADER_PROGRAM_DEFAULT = 1,
-    SHADER_PROGRAM_COUNT
-} ShaderPorgrams;
-
-typedef enum {
-    MESH_BODY = 0,
-    MESH_EYE = 1,
-    MESH_COUNT
-} Meshes;
-
-typedef enum {
-    STORAGE_BUFFER_UNIFORM_SCALE = 0,
-    STORAGE_BUFFER_MUTABLE_COUNT = 0,
-    STORAGE_BUFFER_COUNT = 1
-} StorageBuffers;
-
-
-const ShaderProgramInfo c_shader_programs[] = {
-    [SHADER_PROGRAM_TRIANGLE] = (ShaderProgramInfo) {
-        .flags = 0,
-        .vertex_shader = CONST_STRING("out/data/triangle_v.spv"),
-        .fragment_shader = CONST_STRING("out/data/triangle_f.spv")
-    },
-    [SHADER_PROGRAM_DEFAULT] = (ShaderProgramInfo) {
-        .flags = SHADER_PRORGAM_FLAG_USE_VERTEX_POSITION | SHADER_PRORGAM_FLAG_USE_VERTEX_NORMAL,
-        .vertex_shader = CONST_STRING("out/data/material_v.spv"),
-        .fragment_shader = CONST_STRING("out/data/material_f.spv"),
-    }
-};
-
-const MeshInfo c_mesh_infos[] = {
-    [MESH_BODY] = (MeshInfo) {
-        .file = CONST_STRING("out/data/body.model")
-    },
-    [MESH_EYE] = (MeshInfo) {
-        .file = CONST_STRING("out/data/eye.model")
-    }
-};
-
-const StorageBufferInfo c_storage_buffers[] = {
-    [STORAGE_BUFFER_UNIFORM_SCALE] = (StorageBufferInfo) {
-        .size = sizeof(Material) * 2,
-        .data = (Material[2]){
-            (Material){0.2, 0.6, 0.3, 1.0},
-            (Material){0.02, 0.02, 0.02, 1.0}
-        }
-    }
-};
-
-const UniformBufferInfo c_uniform_buffer_info = {
-    .size = sizeof(UniformBuffer),
-    .data = (UniformBuffer[]){(UniformBuffer){
-        .screen_params = {1.0, 1.0, 1.0, -1.0}
-    }}
-};
-
-
-void updateCallback(UpdateInfo *info, RenderCmd *render_cmd) {
-    *(UniformBuffer *)cmdWriteHostUniformBuffer(render_cmd) = (UniformBuffer) {
-        .screen_params = {(f32)info->res_x, (f32)info->res_y, 1.0, -1.0},
-        .time = {0.0, 0.0, 0.0, 0.0}
-    };
-    cmdTransferUniformBuffer(render_cmd, sizeof(UniformBuffer));
-
-    cmdBeginRendering(render_cmd, 1, (u32[]){RENDER_ATTACHMENT_SCREEN_COLOR_ID}, RENDER_ATTACHMENT_SCREEN_DEPTH_ID); {
-        cmdDrawProcedural(render_cmd, SHADER_PROGRAM_TRIANGLE, 18, 1);
-
-        cmdPushContsants(render_cmd, &(PushConstants[]){{0, U32_MAX, U32_MAX, U32_MAX}}, sizeof(PushConstants));
-        cmdDrawMesh(render_cmd, SHADER_PROGRAM_DEFAULT, MESH_BODY, 1);
-
-        cmdPushContsants(render_cmd, &(PushConstants[]){{1, U32_MAX, U32_MAX, U32_MAX}}, sizeof(PushConstants));
-        cmdDrawMesh(render_cmd, SHADER_PROGRAM_DEFAULT, MESH_EYE, 1);
-    } cmdEndRendering(render_cmd);
-}
-
-i32 main(i32 argc, char **argv) {
-    if(!createArena(&s_context_arena, 1024 * 1024 * 64, 1024 * 1024 * 4)) {
-        MSG_ERROR(msgCallback, &TRACED_STR("failed to create s_context_arena allocator"));
+i32 
+main(
+    i32 argc, 
+    char **argv
+) {
+    void *virtual_allocation = VirtualAlloc(NULL, 1024 * 64, MEM_RESERVE, PAGE_READWRITE);
+    if(!virtual_allocation) {
+        MSG_ERROR(msgCallback, &TRACED_STR("failed to allocate virtual memory"));
         return -1;
     }
 
-    /* vulkan context cration */
-    const VulkanContextInfo vulkan_info = {
-        .name = CONST_STRING("Wreck"),
-        .resolution_x = 800,
-        .resolution_y = 600,
-        .flags = VULKAN_FLAG_RESIZABLE | VULKAN_FLAG_DEBUG,
-        .msg_callback = &msgCallback
+    Segment segment = {virtual_allocation, (byte *)virtual_allocation + 1024 * 64};
+
+    CreateVulkanIn create_vulkan_in = {
+        .msg_callback = msgCallback,
+        .segment = &segment,
+        .name = "Wreck 3D",
+        .flags = VULKAN_IN_FLAG_DEBUG | VULKAN_IN_FLAG_RESIZE | VULKAN_IN_PROTECT_MEMORY,
+        .x = 800,
+        .y = 600
     };
-    VulkanContext *vulkan_context = createVulkanContext(&allocateContext, &vulkan_info);
-    if(!vulkan_context) {
-        MSG_ERROR(msgCallback, &TRACED_STR("failed to create vulkan_context"));
-        return -2;
+    CreateVulkanOut create_vulkan_out = (CreateVulkanOut){0};
+
+    VulkanHandle vulkan = createVulkan(&create_vulkan_in, &create_vulkan_out);
+    if(!vulkan) {
+        MSG_ERROR(msgCallback, &TRACED_STR("failed to create vulkan"));
+        return -1;
+    }
+    
+    if(!runVulkanLoop(vulkan)) {
+        MSG_ERROR(msgCallback, &TRACED_STR("failed to run vulkan loop"));
+        return -1;
     }
 
-    /* render context creation */
-    const RenderContextInfo render_info = {
-        .vulkan_context = vulkan_context,
-        .msg_callback = &msgCallback,
-        /* programs */
-        .programs = c_shader_programs,
-        .program_count = SHADER_PROGRAM_COUNT,
-        /* meshes */
-        .meshes = c_mesh_infos,
-        .mesh_count = MESH_COUNT,
-        /* buffers */
-        .uniform_buffer = &c_uniform_buffer_info,
-        .storage_buffers = c_storage_buffers,
-        .storage_host_mutable_buffer_count = STORAGE_BUFFER_MUTABLE_COUNT,
-        .storage_buffer_count = STORAGE_BUFFER_COUNT,
-        .push_constants_size = sizeof(PushConstants)
-    };
-    RenderContext *render_context = createRenderContext(&allocateContext, &render_info);
-    if(!render_context) {
-        MSG_ERROR(msgCallback, &TRACED_STR("failed to create render_context"));
-        return -3;
+    if(!destroyVulkan(vulkan)) {
+        MSG_ERROR(msgCallback, &TRACED_STR("failed to destroy vulkan"));
+        return -1;
     }
 
-    /* running render loop */
-    if(!runRenderLoop(render_context, &updateCallback)) {
-        MSG_ERROR(msgCallback, &TRACED_STR("render loop failed"));
-        return -4;
+    if(!VirtualFree(virtual_allocation, 0, MEM_RELEASE)) {
+        MSG_ERROR(msgCallback, &TRACED_STR("failed to free virtual memory"));
+        return -1;
     }
 
-    /* destrcution of render context */
-    destroyRenderContext(render_context);
-    /* destrcution of vulkan context */
-    destroyVulkanContext(vulkan_context);
-
-    if(!freeArena(&s_context_arena)) {
-        MSG_ERROR(msgCallback, &TRACED_STR("failed to free s_context_arena allcoator"))
-    }
+    return 0;
 }

@@ -1,233 +1,57 @@
-#ifndef VULKAN_INCLUDED
-#define VULKAN_INCLUDED
+#ifndef _VULKAN_INCLUDED
+#define _VULKAN_INCLUDED
 
-#include <vulkan/vulkan.h>
-#include <GLFW/glfw3.h>
-#include "../main.h"
+#include <base.h>
+
+typedef void *VulkanHandle;
 
 typedef enum {
-    DEVICE_MODEL_NONE = 0,
-    DEVICE_MODEL_DESCRETE = 1, /* device local is not visible to host, use staging buffers */
-    DEVICE_MODEL_INTEGRATED = 2 /* device local is host visible, do not use staging buffers */
-} DeviceModel;
+    VULKAN_IN_FLAGS_NONE = 0x0,
+    VULKAN_IN_FLAG_DEBUG = 0x1,
+    VULKAN_IN_FLAG_RESIZE = 0x2,
+    VULKAN_IN_PROTECT_MEMORY = 0x4
+} VulkanInFlags;
 
-typedef struct {
-    u64 offset;
-    u64 size;
-} VramRegion;
-
-typedef struct {
-    u64 size;
-    u64 alignment;
-    u32 memory_type_bits;
-    u32 mandatory_flags;
-    u32 restricted_flags;
-} VramInfo;
-
-#define ADJUST_VRAM_INFO(info, region, requirements)            \
-info.size = ALIGN(info.size, requirements.alignment);           \
-region = (VramRegion) {                                         \
-    .offset = info.size,                                        \
-    .size = requirements.size                                   \
-};                                                              \
-info.size += requirements.size;                                 \
-info.alignment = MAX(info.alignment, requirements.alignment);   \
-info.memory_type_bits &= requirements.memoryTypeBits;
-
-typedef struct {
-    VkDeviceMemory memory;
-    u64 size;
-    u32 heap_id;
-    u32 memory_id;
-} Vram;
-
-/* context of vulkan */
-struct VulkanContext {
-    /* vulkan and glfw objects */
-    GLFWwindow *window;
-    VkInstance instance;
-    VkSurfaceKHR surface;
-    VkPhysicalDevice physical_device;
-    VkDevice device;
-    /* callback for logs and errors */
-    MsgCallback_pfn msg_callback;
-    /* queue objects */
-    VkQueue render_queue;
-    VkQueue compute_queue;
-    VkQueue transfer_queue;
-    /* queue family indices */
-    u32 render_queue_id;
-    u32 compute_queue_id;
-    u32 transfer_queue_id;
-    /* memory*/
-    DeviceModel device_model;
-    VkPhysicalDeviceMemoryProperties memory_properties;
-    /* dynamic rendering ext */
-    PFN_vkCmdBeginRenderingKHR cmd_begin_rendering;
-    PFN_vkCmdEndRenderingKHR cmd_end_rendering;
-    /* used only if debug flag on */
-    PFN_vkCreateDebugUtilsMessengerEXT create_debug_messenger;
-    PFN_vkDestroyDebugUtilsMessengerEXT destroy_debug_messenger;
-    VkDebugUtilsMessengerEXT debug_messenger;
-};
-
-b32 allocateVram(VulkanContext *vulkan_context, const VramInfo *info, Vram *vram);
-void freeVram(VulkanContext *vulkan_context, Vram *vram);
-
-
-
-#define MAX_SWAPCHAIN_IMAGES (16)
-#define SHADER_ENTRY_VERTEX "vertexMain"
-#define SHADER_ENTRY_FRAGMENT "fragmentMain"
-#define SHADER_ENTRY_COMPUTE "computeMain"
-
-#define DESCRIPTOR_SET_COUNT (4)
-#define PUSH_CONSTANT_RANGE (16)
-
-typedef struct {
-    VkColorSpaceKHR color_space;
-    VkFormat color_format;
-    VkFormat depth_format;
-    VkPresentModeKHR present_mode;
-    VkExtent2D extent;
-} RenderSettings;
-
-typedef struct {
-    u32 swapchain_image_count;
-    VkSwapchainKHR swapchain;
-    VkImage *swapchain_images;
-    VkImageView *swapchain_image_views;
-    VkImage depth_image;
-    VkImageView depth_image_view;
-    VramRegion depth_vram_region;
-} ScreenImages;
-
-/* render prorgams */
 typedef enum {
-    SHADER_PROGRAM_TYPE_NONE = 0,
-    SHADER_PROGRAM_TYPE_GRAPHICS = 1,
-    SHADER_PROGRAM_TYPE_COMPUTE = 2
-} ShaderProgramType;
+    VULKAN_MEMORY_MODEL_NONE = 0,
+    VULKAN_MEMORY_MODEL_HOST_DEVICE = 1,
+    VULKAN_MEMORY_MODEL_FUSED_DEVICE = 2,
+    VULKAN_MEMORY_MODEL_FUSED_HOST = 3
+} VulkanMemoryModel;
+
+typedef enum {
+    VULKAN_DEVICE_MODEL_NONE = 0,
+    VULKAN_DEVICE_MODEL_DESCRETE = 1,
+    VULKAN_DEVICE_MODEL_INTEGRATED = 2
+} VulkanDeviceModel;
+
+typedef enum {
+    VULKAN_OUT_FLAGS_NONE = 0x0,
+    VULKAN_OUT_FLAG_ASYNC_TRANSFER = 0x1,
+    VULKAN_OUT_FLAG_ASYNC_COMPUTE = 0x2
+} VulkanOutFlags;
 
 typedef struct {
-    ShaderProgramType type;
-    VkPipeline pipeline;
-    u32 resources_begin;
-    u32 resources_end;
-    /* different part */
-    union {
-        struct {
-            VkShaderModule vertex_shader;
-            VkShaderModule fragment_shader;
-        };
-        struct {
-            VkShaderModule compute_shader;
-        };
-    };
-} ShaderProgram;
-
-typedef struct {
-    /* all pointer allocations are made on reasouce_arena */
-    u64 push_constants_size; /* push constants are generally used to index storage buffers information */
-    VkPipelineLayout empty_pipeline_layout;
-    VkPipelineLayout full_pipeline_layout;
-    ShaderProgram *shader_programs;
-    u32 *resources_usage;
-    u32 program_count;
-} Programs;
-
-
-typedef struct {
-    f32 position[4];
-    f32 normal[4];
-    f32 uv[4];
-} Vertex;
-
-typedef struct {
-    Vertex *vertices;
-    u16 *indices;
-    u32 vertex_count;
-    u32 index_count;
-} RawMesh;
-
-typedef struct {
-    VkBuffer vertex_buffer;
-    VkBuffer index_buffer;
-    u32 vertex_count;
-    u32 index_count;
-} RenderMesh;
-
-typedef struct {
-    /* all pointer allocations are made on reasouce_arena */
-    RenderMesh *render_meshes;
-    u32 meshes_count;
-} Meshes;
-
-typedef struct {
-    /* uniform buffer */
-    VkBuffer device_uniform_buffer;
-    VkBuffer host_uniform_buffer;
-    VramRegion host_uniform_region;
-    /* storage buffers */
-    VkBuffer *device_storage_buffers;
-    VkBuffer *host_storage_buffers;
-    VramRegion *host_storage_regions;
-    u32 storage_buffer_count;
-    u32 mutable_storage_buffer_count;
-} Buffers;
-
-typedef struct {
-    VkDescriptorPool descriptor_pool;
-    VkDescriptorSet descriptor_sets[DESCRIPTOR_SET_COUNT];
-    
-    VkDescriptorSetLayout frame_layout;
-    VkDescriptorSetLayout storage_buffers_layout;
-    VkDescriptorSetLayout sampled_images_layout;
-    VkDescriptorSetLayout storage_images_layout;
-    
-    u32 descriptor_set_count; /* IMPORTANT: this is not the way to index layouts*/
-} Descriptors;
-
-/* context of render queue */
-struct RenderContext {
-    VulkanContext *vulkan_context;
-    Arena resource_arena;
-    /* screen */
-    RenderSettings render_settings;
-    ScreenImages screen_images;
-    /* resources */
-    Programs shader_programs;
-    Meshes render_meshes;
-    Buffers buffers;
-    Descriptors descriptors;
-    /* memory */
-    Vram images_device_vram;
-    Vram mesh_device_vram;
-    /* buffers are uniform buffer and storage buffers, that are used for object description, like transform matrices, etc.*/
-    Vram buffers_device_vram; /* stores uniform buffer, host mutable device stroage buffers and host immutable storage buffers */
-    Vram buffers_host_vram; /* stores uniform src buffer and host mutable src stroagr buffers */
-    void *buffers_host_vram_map; /* map for buffers_host_vram */
-    /* commands */
-    VkCommandPool command_pool;
-    /* callback for logs and errors */
+    const Segment *segment;
+    const char* name;
     MsgCallback_pfn msg_callback;
-};
+    VulkanInFlags flags;
+    u32 x;
+    u32 y;
+} CreateVulkanIn;
 
-#define MAX_COLOR_ATTACHMENTS (8)
+typedef struct {
+    VulkanOutFlags flags;
+    VulkanMemoryModel memory_model;
+    VulkanDeviceModel device_model;
+} CreateVulkanOut;
 
-struct RenderCmd {
-    RenderContext *render_context;
-    VkCommandBuffer command_buffer;
-    ShaderProgram *last_shader_program;
-    RenderMesh *last_render_mesh;
+VulkanHandle createVulkan(const CreateVulkanIn *input, CreateVulkanOut *output);
+b32 destroyVulkan(VulkanHandle vulkan);
+b32 runVulkanLoop(VulkanHandle vulkan);
 
-    VkRenderingAttachmentInfoKHR color_attachments[MAX_COLOR_ATTACHMENTS];
-    VkRenderingAttachmentInfoKHR depth_attachment;
-    u32 color_attachment_count;
-    b32 use_depth_atachment;
+#define REQUIRED_DEVICE_VRAM_SIZE (1024llu * 1024llu * 1024llu * 2llu)
+#define REQUIRED_HOST_VRAM_SIZE (1024llu * 1024llu * 1024llu * 4llu)
+#define MAX_PHYSICAL_DEVICE_COUNT (4)
 
-    VkImageView screen_color_view;
-    VkImageView screen_depth_view;
-};
-
-#endif
+#endif /* _VULKAN_INCLUDED */

@@ -120,17 +120,49 @@ void stringPatternTest(void) {
 }
 
 void asmTest(void) {
-    u32 array_dst[15] = {0};
-    u32 array_src[10] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
-    asmCopyMemoryDwordAtomicW(array_dst, array_src, 10);
-    asmCopyMemoryQwordAtomicW(array_dst, array_src + 4, 2);
+    /* atomicCopyMemoryWrite_dword */ {
+        u32 array_dst[15] = {0};
+        u32 array_src[10] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+        if(!atomicCopyMemoryWrite_dword(array_dst, array_src, 10)) {
+            printConsole(&CONST_STRING("asmCopyMemoryDwordAtomicW fail on aligned address (bad)\n"));
+        } else {
+            printConsole(&CONST_STRING("asmCopyMemoryDwordAtomicW success on aligned address (correct)\n"));
+        }
+        if(!atomicCopyMemoryWrite_dword((u8 *)array_dst + 2, array_src, 6)) {
+            printConsole(&CONST_STRING("asmCopyMemoryDwordAtomicW fail on unaligned address (correct)\n"));
+        }
+        if(!atomicCopyMemoryWrite_dword(array_dst, array_src, 0)) {
+            printConsole(&CONST_STRING("asmCopyMemoryDwordAtomicW fail on zero size (correct)\n"));
+        }
 
-    String str = STACK_STR(256);
-    for(u32 i = 0; i < 10; i++) {
-        stringAddU64(&str, array_dst[i]);
-        stringAddChar(&str, ' ');
+        String str = STACK_STR(256);
+        for(u32 i = 0; i < 10; i++) {
+            stringAddU64(&str, array_dst[i]);
+            stringAddChar(&str, ' ');
+        }
+        stringAddChar(&str, '\n');
+        printConsole(&str);
     }
-    printConsole(&str);
+    
+    /* atomicCmpExchange_dword */ {
+        u32 value = 10;
+        if(atomicCmpExchange_dword(&value, 15, 10) == 10) {
+            printConsole(&CONST_STRING("atomicCmpExchange_dword returns inital value (correct)\n"));
+        }
+        if(atomicCmpExchange_dword(&value, 15, 10) == 15) {
+            printConsole(&CONST_STRING("atomicCmpExchange_dword returns new value (correct)\n"));
+        }
+        if(atomicCmpExchange_dword(&value, 6, 15) == 10) {
+            printConsole(&CONST_STRING("atomicCmpExchange_dword returns new value (correct)\n"));
+        }
+    }
+
+    /* atomicExchange_dword */ {
+        u32 value = 15;
+        if(atomicExchange_dword(&value, 10) == 15) {
+            printConsole(&CONST_STRING("atomicExchange_dword swap values (correct)\n"));
+        }
+    }
 }
 
 i32 main(i32 argc, char **argv) {

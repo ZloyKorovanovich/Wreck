@@ -1,178 +1,49 @@
 #include "base.h"
 
-/* INCLUDES */
-#if defined(_WIN32)
-    #include <windows.h>
-#endif
-
 /* ALLOCATORS */
 
-#if defined(_WIN32)
 
-    /* ARENA */
-
-    b32 createArena(Arena *arena, u64 limit, u64 expansion) {
-        /* validate allocation, align to page size */
-        limit = ALIGN(((limit == 0) ? ARENA_DEFAULT_VIRTUAL_SIZE : limit), ARENA_DEFAULT_EXPANSION);
-        /* validate expansion, align it to 4 KB at least */
-        expansion = ALIGN((expansion == 0) ? ARENA_DEFAULT_EXPANSION : expansion, 4 * 1024);
-        /* reserve virtual address space */
-        void *virtual_allocation = VirtualAlloc(NULL, limit, MEM_RESERVE, PAGE_READWRITE);
-        if(!virtual_allocation) {
-            return FALSE;
+void * 
+allocateArena(
+    Arena *arena, 
+    u64 size, 
+    u64 alignment,
+    u64 *possible_size
+) {
+    if(alignment == 0 || size == 0) {
+        if(possible_size) {
+            possible_size = 0;
         }
-        /* fill struct */
-        *arena = (Arena) {
-            .begin = virtual_allocation,
-            .end = virtual_allocation,
-            .virtual_size = limit,
-            .expansion = expansion
-        };
-        return TRUE;
+        return NULL;
     }
 
-    void *allocateArena(Arena *arena, u64 size, u64 alignment) {
-        if(size == 0) {
-            return NULL;
+    void *alloc_address = (void *)ALIGN((u64)arena->edge, alignment); 
+    void *new_edge = (u8 *)alloc_address + size;
+
+    if((u64)alloc_address > (u64)arena->end) {
+        if(possible_size) {
+            *possible_size = 0;
         }
-        /* default alignment if alignment == 0 */
-        alignment = (alignment == 0) ? DEFAULT_ALIGMENT : alignment;
-        /* calculate where user allocation will begin */
-        u64 alloc_offset = ALIGN(((u64)arena->end - (u64)arena->begin), alignment);
-        /* if exceed virtual size, things are very bad */
-        if(alloc_offset + size > arena->virtual_size) {
-            return NULL;
-        }
-        /* if physical size is too small, allocate more physical memory */
-        if(alloc_offset + size > arena->physical_size) {
-            u64 commit_size = ALIGN((alloc_offset + size - arena->physical_size), arena->expansion);
-            if(!VirtualAlloc((byte*)arena->begin + arena->physical_size, commit_size, MEM_COMMIT, PAGE_READWRITE)) {
-                return NULL;
-            }
-            arena->physical_size += commit_size;
-        }
-        /* adjust arena and return user pointer */
-        arena->end = (byte*)arena->begin + alloc_offset + size;
-        return (byte*)arena->begin + alloc_offset;
+        return NULL;
     }
-
-    void clearArena(Arena *arena) {
-        /* move end to begin and assume everything that was begin and end will be now overwritten */
-        arena->end = arena->begin;
-    }
-
-    b32 resetArena(Arena *arena) {
-        /* free on windows might fail need to specify size if releasing physical */
-        if(!VirtualFree(arena->begin, arena->physical_size, MEM_DECOMMIT)) {
-            return FALSE;
+    /* too big allocation */
+    if((u64)new_edge > (u64)arena->end) {
+        if(possible_size) {
+            *possible_size = (u64)arena->end - (u64)alloc_address;
         }
-        arena->physical_size = 0;
-        arena->end = arena->begin;
-        return TRUE;
+        return NULL;
     }
+    /* correct allocation, apply transform */
+    arena->edge = new_edge;
+    return alloc_address;
+}
 
-    b32 freeArena(Arena *arena) {
-        /* free on windows might fail no need to specify size if releasing virtual */
-        if(!VirtualFree(arena->begin, 0, MEM_RELEASE)) {
-            return FALSE;
-        }
-        *arena = (Arena){0};
-        return TRUE;
-    }
-
-    /* STACK */
-
-    b32 createStack(Stack *stack, u64 limit, u64 expansion) {
-        /* validate allocation, align to page size */
-        limit = ALIGN((limit == 0) ? STACK_DEFAULT_VIRTUAL_SIZE : limit, STACK_DEFAULT_PAGE_SIZE);
-        /* validate expansion, align it to 4 KB at least */
-        expansion = ALIGN((expansion == 0) ? ARENA_DEFAULT_EXPANSION : expansion, 4 * 1024);
-        /* reserve virtual address space */
-        void *virtual_allocation = VirtualAlloc(NULL, limit, MEM_RESERVE, PAGE_READWRITE);
-        if(!virtual_allocation) {
-            return FALSE;
-        }
-        /* fill struct */
-        *stack = (Stack) {
-            .begin = virtual_allocation,
-            .edge = virtual_allocation,
-            .end = virtual_allocation,
-            .virtual_size = limit,
-            .expansion = expansion
-        };
-        return TRUE;
-    }
-
-    void *allocateStack(Stack *stack, u64 size, u64 alignment) {
-        if(size == 0) {
-            return NULL;
-        }
-        /* default alignment if alignment == 0 */
-        alignment = (alignment == 0) ? DEFAULT_ALIGMENT : alignment;
-        /* calculate where user allocation will begin */
-        u64 alloc_offset = ALIGN(((u64)stack->end - (u64)stack->begin), alignment);
-        /* if exceed virtual size, things are very bad */
-        if(alloc_offset + size > stack->virtual_size) {
-            return NULL;
-        }
-        /* if physical size is too small, allocate more physical memory */
-        if(alloc_offset + size > stack->physical_size) {
-            u64 commit_size = ALIGN((alloc_offset + size - stack->physical_size), stack->expansion);
-            if(!VirtualAlloc((byte*)stack->begin + stack->physical_size, commit_size, MEM_COMMIT, PAGE_READWRITE)) {
-                return NULL;
-            }
-            stack->physical_size += commit_size;
-        }
-        /* adjust arena and return user pointer */
-        stack->end = (byte*)stack->begin + alloc_offset + size;
-        return (byte*)stack->begin + alloc_offset;
-    }
-
-    void *pushStack(Stack *stack) {
-        void** push_slot = allocateStack(stack, sizeof(void*), sizeof(void*));
-        if(!push_slot) {
-            return NULL;
-        }
-        *push_slot = stack->edge;
-        stack->edge = stack->end;
-        return stack->edge;
-    }
-
-    void *popStack(Stack *stack) {
-        if(stack->begin == stack->edge) {
-            return NULL;
-        }
-        stack->end = stack->edge;
-        stack->edge = *((void**)stack->edge);
-        return stack->edge;
-    }
-
-    void clearStack(Stack *stack) {
-        stack->edge = stack->begin;
-        stack->end = stack->begin;
-    }
-
-    b32 resetStack(Stack *stack) {
-        /* free on windows might fail need to specify size if releasing physical */
-        if(!VirtualFree(stack->begin, stack->physical_size, MEM_DECOMMIT)) {
-            return FALSE;
-        }
-        stack->physical_size = 0;
-        stack->edge = stack->begin;
-        stack->end = stack->begin;
-        return TRUE;
-    }
-
-    b32 freeStack(Stack *stack) {
-        /* free on windows might fail no need to specify size if releasing virtual */
-        if(!VirtualFree(stack->begin, 0, MEM_RELEASE)) {
-            return FALSE;
-        }
-        *stack = (Stack){0};
-        return TRUE;
-    }
-
-#endif
+void
+freeArena(
+    Arena *arena
+) {
+    arena->edge = arena->begin;
+}
 
 /* MEMORY */
 
@@ -228,6 +99,22 @@ b32 stringAddChar(String *dst, char c) {
     }
     dst->string[dst->size++] = c;
     dst->string[dst->size] = '\0';
+    return TRUE;
+}
+
+
+b32 stringAddAddress(String *dst, u64 address) {
+    const u64 new_size = dst->size + 16;
+    if(new_size >= dst->capacity) {
+        return FALSE;
+    }
+    u32 j = 15 * 4;
+    for(u32 i = dst->size; i < new_size; i++, j-=4) {
+        u64 digit = (address >> j) & 0xf;
+        dst->string[i] = (digit > 9) ? (digit - 10) + 65 : digit + 48;
+    }
+    dst->string[new_size] = '\0';
+    dst->size = new_size;
     return TRUE;
 }
 
@@ -456,7 +343,6 @@ f64 stringToF64(const String *src) {
     return is_negative ? -num : num;
 }
 
-
 b32 stringUpFolder(String *path) {
     for(u64 i = path->size - 1; i >= 0; i--) {
         if(path->string[i] == '/' || path->string[i] == '\\') {
@@ -483,6 +369,13 @@ b32 stringPattern(const String *pattern, const void** elements, String *out_stri
             }
             if(pattern->string[i + 1] == 'c') {
                 if(!stringAddCstring(out_string, (const char*)elements[element_iterator++])) {
+                    return FALSE;
+                }
+                i += 1;
+            }
+
+            if(pattern->string[i + 1] == 'p') {
+                if(!stringAddAddress(out_string, *((const u64*)elements[element_iterator++]))) {
                     return FALSE;
                 }
                 i += 1;
