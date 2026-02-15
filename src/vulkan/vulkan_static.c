@@ -1,68 +1,15 @@
+
+#define INCLUDE_VULKAN_INTERNAL
 #include "vulkan.h"
 
-#ifdef _WIN32
-    #define VK_USE_PLATFORM_WIN32_KHR
-#endif
-
-#include <vulkan/vulkan.h>
-#include <GLFW/glfw3.h>
-
 /*  ===============================================================
-        VULKAN & SEGMENT
+        SEGMENT
     =============================================================== */
-/*  Segment layout representation:
-    +----------------+---------------+-----------------+---------+---------+--------+----------+--------+
-    | VULKAN OBJECTS | VULKAN DEVICE |                                                                  |
-    +----------------+---------------+-----------------+---------+---------+--------+----------+--------+  */
-
-/* on all platforms we cover window is a handle, see [WINDOW SYSTEMS] */
-typedef void *Window;
-
-typedef struct {
-    VulkanInFlags flags;
-    MsgCallback_pfn msg_callback;
-    Window window;
-    VkInstance instance;
-    VkSurfaceKHR surface;
-    VkDebugUtilsMessengerEXT debug_messenger;
-    /* debug extension */
-    PFN_vkCreateDebugUtilsMessengerEXT create_debug_messenger;
-    PFN_vkDestroyDebugUtilsMessengerEXT destroy_debug_messenger;
-} VulkanObjects;
-
-typedef struct {
-    VkPhysicalDevice physical_device;
-    VulkanDeviceModel device_model;
-    VulkanMemoryModel memory_model;
-
-    VkDevice device;
-    VkQueue render_queue;
-    VkQueue transfer_queue;
-    VkQueue compute_queue;
-
-    u32 render_queue_id;
-    u32 transfer_queue_id;
-    u32 compute_queue_id;
-} VulkanDevice;
-
-
-typedef struct {
-    void *segment_begin;
-    void *vulkan_objects_begin;
-    void *vulkan_objects_end_device_begin;
-    void *vulkan_device_end;
-    void *static_end_dynamic_begin;
-    void *segment_end;
-} VulkanSegment;
-
-
-#define STATIC_PART_SIZE (ALIGN(sizeof(VulkanSegment) + sizeof(VulkanObjects) + sizeof(VulkanDevice), MEMORY_PAGE_SIZE))
-#define MIN_VULKAN_SEGMENT_SIZE (ALIGN(STATIC_PART_SIZE, ALLOCATION_GRANULARITY))
 
 /* Layouts virtual addresses of vulkan_objects segment,
     fills VulkanSegment struct with pointers to
     future data. Commits memory to the segment */
-VulkanSegment * 
+static VulkanSegment * 
 layoutSegment(
     const Segment *segment, 
     MsgCallback_pfn msg_callback
@@ -87,7 +34,9 @@ layoutSegment(
         .vulkan_objects_begin               = (byte *)segment->begin + sizeof(VulkanSegment),
         .vulkan_objects_end_device_begin    = (byte *)segment->begin + sizeof(VulkanSegment) + sizeof(VulkanObjects),
         .vulkan_device_end                  = (byte *)segment->begin + sizeof(VulkanSegment) + sizeof(VulkanObjects) + sizeof(VulkanDevice),
-        .static_end_dynamic_begin           = (byte *)segment->begin + ALIGN(sizeof(VulkanSegment) + sizeof(VulkanObjects) + sizeof(VulkanDevice), MEMORY_PAGE_SIZE),
+        .static_end_dynamic_begin           = (byte *)segment->begin + STATIC_PART_SIZE,
+        .vulkan_textures_begin              = (byte *)segment->begin + STATIC_PART_SIZE,
+        .vulkan_textures_end                = (byte *)segment->begin + STATIC_PART_SIZE + sizeof(VulkanScreen),
         .segment_end                        = segment->end
     };
 
@@ -137,7 +86,7 @@ layoutSegment(
     }
 
     /* creates win32 windows handle */
-    Window 
+    static Window 
     createWindow(
         const char *name, 
         u32 x, 
@@ -193,7 +142,7 @@ layoutSegment(
         }
     }
 
-    b32
+    static b32
     destroyWindow(
         Window window,
         MsgCallback_pfn msg_callback
@@ -369,7 +318,7 @@ matchExtensionsAndLayers(
 
 /* Creates vulkan_objects objects: window, instance, 
     debug messenger (optional) and surface.             */
-b32 
+static b32 
 createVulkanObjects(
     u32 flags,
     u32 window_x,
@@ -379,6 +328,7 @@ createVulkanObjects(
     Arena *alloc_arena,
     MsgCallback_pfn msg_callback
 ) {
+    String log_str = STACK_STR(512);
     *vulkan_objects = (VulkanObjects){.flags = flags, .msg_callback = msg_callback};
     b32 is_debug = flags & VULKAN_IN_FLAG_DEBUG;
     
@@ -454,6 +404,37 @@ createVulkanObjects(
             goto _critical_fail;
         }
 
+        /* LOG INSTANCE */ {
+            stringZero(&log_str);
+            stringAddCstring(
+                &log_str, 
+                "create vulkan instance {\n"
+                "\textensions {\n"
+            );
+            for(u32 i = 0; i < required_extension_count; i++) {
+                stringAddCstring(&log_str, "\t\t\"");
+                stringAddCstring(&log_str, required_extensions[i]);
+                stringAddCstring(&log_str, "\"\n");
+            }
+            stringAddCstring(
+                &log_str, 
+                "\t}\n"
+                "\tlayers {\n"
+            );
+            for(u32 i = 0; i < required_layer_count; i++) {
+                stringAddCstring(&log_str, "\t\t\"");
+                stringAddCstring(&log_str, required_layers[i]);
+                stringAddCstring(&log_str, "\"\n");
+            }
+            stringAddCstring(
+                &log_str, 
+                "\t}\n"
+                "}"
+            );
+
+            MSG_LOG(msg_callback, &log_str)
+        }
+                
         /* load debug extension functions and create debug messenger */
         if(is_debug) {
             /* load extensions */
@@ -469,6 +450,8 @@ createVulkanObjects(
                 MSG_ERROR(msg_callback, &TRACED_STR("failed to create vulkan debug messenger"));
                 goto _critical_fail;
             }
+
+            MSG_LOG(msg_callback, &CONST_STRING("created vulkan debug messenger"));
         }
     }
 
@@ -494,7 +477,7 @@ createVulkanObjects(
     }
 }
 
-b32
+static b32
 destroyVulkanObjects(
     VulkanObjects *vulkan,
     MsgCallback_pfn msg_callback
@@ -548,6 +531,7 @@ destroyVulkanObjects(
     | VULKAN OBJECTS | VULKAN DEVICE | TEMP |->      |
     +----------------+---------------+------+--------+
                                                  segment end            */
+
 typedef struct {
     /* device info */
     VkPhysicalDevice device;
@@ -560,11 +544,18 @@ typedef struct {
     u32 render_queue_id;
     u32 transfer_queue_id;
     u32 compute_queue_id;
+    /* formats */
+    VkColorSpaceKHR screen_color_space;
+    VkFormat screen_color_format;
+    VkFormat color_format;
+    VkFormat depth_format;
+    VkPresentModeKHR present_mode;
 } DeviceData;
 
-b32 
+static b32
 getDeviceData(
     VkPhysicalDevice physical_device,
+    VkSurfaceKHR surface,
     u32 required_extension_count,
     const char **required_extensions,
     DeviceData *device_data,
@@ -578,12 +569,16 @@ getDeviceData(
         vkGetPhysicalDeviceProperties(physical_device, &device_properties);
         cstringCpy(device_data->name, device_properties.deviceName);
         device_data->device_id = device_properties.deviceID;
+
+        /* check device type and assign appropriate device model value,
+            for now only Descrete and Integrated options are supported. */
         if(device_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
             device_data->device_model = VULKAN_DEVICE_MODEL_DESCRETE;
         }
         else if(device_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
             device_data->device_model = VULKAN_DEVICE_MODEL_INTEGRATED;
         }
+        /* neither descrete, nor integrated */
         else {
             return FALSE;
         }
@@ -743,7 +738,6 @@ getDeviceData(
         VkExtensionProperties *extension_properties = NULL;
         vkEnumerateDeviceExtensionProperties(physical_device, NULL, &extension_count, NULL);
         if(extension_count == 0) {
-            MSG_WARNING(msg_callback, &TRACED_STR("physical device extension count is zero"));
             return FALSE;
         }
         
@@ -786,24 +780,176 @@ getDeviceData(
         _extensions_end: {};
     }
 
+    freeArena(alloc_arena);
+
+    /* SCREEN COLOR FORMAT */ {
+        u32 format_count = 0;
+        VkSurfaceFormatKHR *formats = NULL;
+        vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &format_count, NULL);
+        if(format_count == 0) {
+            return FALSE;
+        }
+        
+        u64 max_alloc_size = 0;
+        formats = allocateArena(alloc_arena, format_count * sizeof(VkSurfaceFormatKHR), 16, &max_alloc_size);
+        if(!formats) {
+            if(max_alloc_size == 0) {
+                MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate device formats array"));
+                return FALSE;
+            }
+            MSG_WARNING(msg_callback, &TRACED_STR("not enough space for device format array, allocaing partialy"));
+
+            format_count = max_alloc_size / sizeof(VkSurfaceFormatKHR);
+            formats = allocateArena(alloc_arena, format_count * sizeof(VkSurfaceFormatKHR), 16, &max_alloc_size);
+            if(!formats) {
+                MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate device formats array"));
+                return FALSE;
+            }
+        }
+        /* initialize formats array */
+        vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &format_count, formats);
+
+        device_data->screen_color_space = formats[0].colorSpace;
+        device_data->screen_color_format = formats[0].format;
+        for(u32 i = 0; i < format_count; i++) {
+            if(
+                formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR && 
+                formats[i].format == VK_FORMAT_B8G8R8A8_SRGB
+            ) {
+                device_data->screen_color_space = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+                device_data->screen_color_format = VK_FORMAT_B8G8R8A8_SRGB;
+                break;
+            }
+        }
+    }
+
+    /* COLOR FORMAT */ {
+        const VkFormat color_formats[] = {
+            VK_FORMAT_R32G32B32A32_SFLOAT,
+            VK_FORMAT_R16G16B16A16_SFLOAT,
+            VK_FORMAT_B8G8R8A8_SRGB
+        };
+
+        
+        for(u32 i = 0; i < ARRAY_SIZE(color_formats); i++) {
+            VkFormatProperties format_properties = (VkFormatProperties){0};
+            vkGetPhysicalDeviceFormatProperties(physical_device, color_formats[i], &format_properties);
+            if(
+                (VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) == (format_properties.optimalTilingFeatures & (VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT))
+            ) {
+                device_data->color_format = color_formats[i];
+                goto _found_color_format;
+            }
+        }
+        /* not found any color format */
+        return FALSE;
+
+        _found_color_format: {};
+    }
+
+    /* DEPTH FORMAT */ {
+        const VkFormat depth_formats[] = {
+            VK_FORMAT_D32_SFLOAT, 
+            VK_FORMAT_D32_SFLOAT_S8_UINT, 
+            VK_FORMAT_D24_UNORM_S8_UINT
+        };
+
+        for(u32 i = 0; i < ARRAY_SIZE(depth_formats); i++) {
+            VkFormatProperties format_properties = (VkFormatProperties){0};
+            vkGetPhysicalDeviceFormatProperties(physical_device, depth_formats[i], &format_properties);
+            if(format_properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) {
+                device_data->depth_format = depth_formats[i];
+                goto _found_depth_format;
+            }
+        }
+        /* not found any depth format */
+        return FALSE;
+
+        _found_depth_format: {};
+    }
+
+    freeArena(alloc_arena);
+
+    /* PRESENT MODE */ {
+        u32 present_mode_count = 0;
+        VkPresentModeKHR *present_modes = NULL;
+        vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &present_mode_count, NULL);
+        if(present_mode_count == 0) {
+            return FALSE;
+        }
+        
+        u64 max_alloc_size = 0;
+        present_modes = allocateArena(alloc_arena, present_mode_count * sizeof(VkPresentModeKHR), 16, &max_alloc_size);
+        if(!present_modes) {
+            if(max_alloc_size == 0) {
+                MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate device present modes array"));
+                return FALSE;
+            }
+            MSG_WARNING(msg_callback, &TRACED_STR("not enough space for device present modes array, allocaing partialy"));
+
+            present_mode_count = max_alloc_size / sizeof(VkPresentModeKHR);
+            present_modes = allocateArena(alloc_arena, present_mode_count * sizeof(VkPresentModeKHR), 16, &max_alloc_size);
+            if(!present_modes) {
+                MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate device present modes array"));
+                return FALSE;
+            }
+        }
+
+        vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &present_mode_count, present_modes);
+        /* fifo present mode is guaranteed always */
+        device_data->present_mode = VK_PRESENT_MODE_FIFO_KHR;
+        for(u32 i = 0; i < present_mode_count; i++) {
+            if(present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
+                device_data->present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
+                break;
+            }
+        }
+    }
+
     return TRUE;
 }
 
-b32 
+static b32 
 compareDevices(
-    const DeviceData *device_a,
-    const DeviceData *device_b
+    u32 device_id,
+    const char *device_name,
+    const DeviceData *device_l,
+    const DeviceData *device_r
 ) {
+    /* check if specific id is searched for */
+    if(device_id != U32_MAX) {
+        if(device_r->device_id == device_id) {
+            return TRUE;
+        }
+        if(device_l->device_id == device_id) {
+            return FALSE;
+        }
+    }
+
+    /* check if specific name is searched for */
+    if(device_name) {
+        if(cstringCmp(device_r->name, device_name)) {
+            return TRUE;
+        }
+        if(cstringCmp(device_l->name, device_name)) {
+            return FALSE;
+        }
+    }
+
+    if(device_l->device_model == VULKAN_DEVICE_MODEL_INTEGRATED && device_r->device_model == VULKAN_DEVICE_MODEL_DESCRETE) {
+        return TRUE;
+    }
     return FALSE;
 }
 
-b32 
+static b32 
 createVulkanDevice(
     const VulkanObjects *vulkan,
     VulkanDevice *device,
     Arena *alloc_arena,
     MsgCallback_pfn msg_callback
 ) {
+    String log_str = STACK_STR(256);
     *device = (VulkanDevice){0};
 
     u32 device_count = 0;
@@ -832,7 +978,8 @@ createVulkanDevice(
 
         for(u32 i = 0; i < physical_device_count; i++) {
             if(getDeviceData(
-                physical_devices[i], 
+                physical_devices[i],
+                vulkan->surface,
                 required_extension_count, 
                 required_extensions, 
                 &devices[device_count], 
@@ -850,7 +997,7 @@ createVulkanDevice(
 
         for(u32 i = 0; i < device_count; i++) {
             for(u32 j = 0; j < i; j++) {
-                if(compareDevices(&devices[j], &devices[i])) {
+                if(compareDevices(U32_MAX, NULL, &devices[j], &devices[i])) {
                     DeviceData temp = devices[j];
                     devices[j] = devices[i];
                     devices[i] = temp;
@@ -870,6 +1017,20 @@ createVulkanDevice(
         f32 queue_priority = 1.0f;
         /* attempt to create devices that are worse if creation fails */
         for(u32 i = 0; i < device_count; i++) {
+            /* LOG */ {
+                stringPattern(
+                    &CONST_STRING(
+                        "trying to create device {\n"
+                        "\tid: %u32\n"
+                        "\tname: \"%c\"\n"
+                        "}"
+                    ),
+                    (const void *[]){&devices[i].device_id, devices[i].name},
+                    &log_str
+                );
+                MSG_LOG(msg_callback, &log_str);
+            }
+            
             u32 queue_count = 0;
             queue_infos[queue_count++] = (VkDeviceQueueCreateInfo) {
                 .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
@@ -903,6 +1064,7 @@ createVulkanDevice(
             };
 
             VkDevice created_device = NULL;
+            /* try to create device */
             if(vkCreateDevice(devices[i].device, &device_info, NULL, &created_device) == VK_SUCCESS) {
                 *device = (VulkanDevice) {
                     .physical_device = devices[i].device,
@@ -914,6 +1076,7 @@ createVulkanDevice(
                     .compute_queue_id = devices[i].compute_queue_id
                 };
 
+                /* get device queues */
                 vkGetDeviceQueue(created_device, devices[i].render_queue_id, 0, &device->render_queue);
                 if(devices[i].transfer_queue_id != U32_MAX) {
                     vkGetDeviceQueue(created_device, devices[i].transfer_queue_id, 0, &device->transfer_queue);
@@ -921,6 +1084,15 @@ createVulkanDevice(
                 if(devices[i].compute_queue_id != U32_MAX) {
                     vkGetDeviceQueue(created_device, devices[i].compute_queue_id, 0, &device->compute_queue);
                 }
+
+                /* cppy device formats */
+                device->screen_color_space = devices[i].screen_color_space;
+                device->screen_color_format = devices[i].screen_color_format;
+                device->depth_format = devices[i].depth_format;
+                device->present_mode = devices[i].present_mode;
+                device->color_format = devices[i].color_format;
+
+                MSG_LOG(msg_callback, &CONST_STRING("successfuly mounted device"));
 
                 goto _success;
             }
@@ -940,7 +1112,7 @@ createVulkanDevice(
     }
 }
 
-b32
+static b32
 destroyVulkanDevice(
     const VulkanObjects *vulkan,
     VulkanDevice *device,
@@ -1041,6 +1213,7 @@ createVulkan(
                 goto _critical_fail;
             }
         #endif /* _WIN32 */
+        MSG_LOG(msg_callback, &CONST_STRING("protected static part of vulkan segment"));
     }
 
     return (VulkanHandle)segment;
@@ -1070,6 +1243,8 @@ destroyVulkan(
                 MSG_WARNING(msg_callback, &TRACED_STR("failed to turn off protection of vulkan segment static part"));   
             }
         #endif /* _WIN32 */
+
+        MSG_LOG(msg_callback, &CONST_STRING("removed protection from static part of vulkan segment"));
     }
 
     if(!destroyVulkanDevice(vulkan_objects, vulkan_device, msg_callback)) {
@@ -1084,37 +1259,4 @@ destroyVulkan(
     }
     
     return result;
-}
-
-b32
-runVulkanLoop(
-    VulkanHandle vulkan
-) {
-    const VulkanSegment *vulkan_segment = (VulkanSegment *)vulkan;
-
-#ifdef _WIN32
-    MSG win32_message = (MSG){0};
-#endif /*_WIN32 */
-
-    b32 is_running_window = TRUE;
-    while(is_running_window) {
-
-        #ifdef _WIN32
-            /* 2nd param is NULL, it indicates that we peek 
-                message from current Threads windows       */
-            while(PeekMessage(
-                &win32_message, 
-                NULL, 
-                0, 
-                0, 
-                PM_REMOVE
-            )) {
-                is_running_window = (win32_message.message == WM_QUIT) ? FALSE : TRUE;
-                TranslateMessage(&win32_message);
-                DispatchMessage(&win32_message);
-            }
-        #endif /* _WIN32 */
-    }
-
-    return TRUE;
 }

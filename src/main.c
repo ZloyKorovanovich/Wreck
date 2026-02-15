@@ -63,8 +63,18 @@ main(
         return -1;
     }
     
+    if(!createVulkanDynamic(vulkan)) {
+        MSG_ERROR(msgCallback, &TRACED_STR("failed to create dynamic vulkan"));
+        return -1;
+    }
+
     if(!runVulkanLoop(vulkan)) {
         MSG_ERROR(msgCallback, &TRACED_STR("failed to run vulkan loop"));
+        return -1;
+    }
+
+    if(!destroyVulkanDynamic(vulkan)) {
+        MSG_ERROR(msgCallback, &TRACED_STR("failed to destroy dynamic vulkan"));
         return -1;
     }
 
