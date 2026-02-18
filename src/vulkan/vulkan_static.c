@@ -14,6 +14,8 @@ layoutSegment(
     const Segment *segment, 
     MsgCallback_pfn msg_callback
 ) {
+    String log_str = STACK_STR(256);
+
     /* check if size of segment is appropreate */
     u64 segment_size = (u64)segment->end - (u64)segment->begin;
     if(segment_size < MIN_VULKAN_SEGMENT_SIZE) {
@@ -30,15 +32,36 @@ layoutSegment(
     /* initialize segment addresses, segment layout is stored in the segment itself */
     VulkanSegment *vulkan_segment = (VulkanSegment *)segment->begin;
     *vulkan_segment = (VulkanSegment) {
-        .segment_begin                      = (byte *)segment->begin + sizeof(VulkanSegment),
-        .vulkan_objects_begin               = (byte *)segment->begin + sizeof(VulkanSegment),
-        .vulkan_objects_end_device_begin    = (byte *)segment->begin + sizeof(VulkanSegment) + sizeof(VulkanObjects),
-        .vulkan_device_end                  = (byte *)segment->begin + sizeof(VulkanSegment) + sizeof(VulkanObjects) + sizeof(VulkanDevice),
-        .static_end_dynamic_begin           = (byte *)segment->begin + STATIC_PART_SIZE,
-        .vulkan_textures_begin              = (byte *)segment->begin + STATIC_PART_SIZE,
-        .vulkan_textures_end                = (byte *)segment->begin + STATIC_PART_SIZE + sizeof(VulkanScreen),
-        .segment_end                        = segment->end
+        .vulkan_objects     = (byte *)segment->begin + sizeof(VulkanSegment),
+        .vulkan_device      = (byte *)segment->begin + sizeof(VulkanSegment) + sizeof(VulkanObjects),
+        .vulkan_memory      = (byte *)segment->begin + sizeof(VulkanSegment) + sizeof(VulkanObjects) + sizeof(VulkanDevice),
+        .vulkan_screen      = (byte *)segment->begin + sizeof(VulkanSegment) + sizeof(VulkanObjects) + sizeof(VulkanDevice) + sizeof(VulkanMemory),
+        .vulkan_pipelines     = (byte *)segment->begin + sizeof(VulkanSegment) + sizeof(VulkanObjects) + sizeof(VulkanDevice) + sizeof(VulkanMemory) + sizeof(VulkanScreen),
+
+        .resource_address   = (byte *)segment->begin + VULKAN_STRUCTS_SIZE,
+        .resource_shaders   = (byte *)segment->begin + VULKAN_STRUCTS_SIZE,
+
+        .segment_end = segment->end
     };
+
+    /* LOG */ {
+        u64 segment_size = (u64)vulkan_segment->segment_end - (u64)vulkan_segment;
+        u64 structs_size = VULKAN_STRUCTS_SIZE;
+        u64 resource_size = (u64)vulkan_segment->segment_end - (u64)vulkan_segment->resource_address;
+
+        stringPattern(
+            &CONST_STRING(
+                "vulkan segment {\n" 
+                "\tsize: %u64\n"
+                "\tstructs size: %u64\n"
+                "\tresources size: %u64\n"
+                "}"
+            ),
+            (const void *[]){&segment_size, &structs_size, &resource_size},
+            &log_str
+        );
+        MSG_LOG(msg_callback, &log_str);
+    }
 
     /* success */
     return vulkan_segment;
@@ -166,15 +189,6 @@ layoutSegment(
     Window is also part of vulkan_objects objects, as it is cloesly related to surface. 
     There is one optional vulkan_objects object, which is debug messegner, its only
     created when debug flag is set in creation function.                                */
-/* At the moment of vulkan objects creation segment looks like that:
-    +----------------+---------------------------+
-    | VULKAN OBJECTS | TEMP |->                  |
-    +----------------+---------------------------+
-             vulkan objects end              segment end                
-
-    We use space from [vulkan objects end] address to [segment end] address for temporary
-    that are mostely created when using enumeration functions of vulkan, 
-    for example "vkEnumerateInstanceExtensionProperties". That space is acting as an Arena  */
 
 VKAPI_ATTR VkBool32 VKAPI_CALL 
 validationDebugCallback(
@@ -526,11 +540,6 @@ destroyVulkanObjects(
 /*  ===============================================================
         DEVICES
     =============================================================== */
-/* At the moment of vulkan device creation segment looks like that:
-    +----------------+---------------+------+--------+
-    | VULKAN OBJECTS | VULKAN DEVICE | TEMP |->      |
-    +----------------+---------------+------+--------+
-                                                 segment end            */
 
 typedef struct {
     /* device info */
@@ -949,7 +958,7 @@ createVulkanDevice(
     Arena *alloc_arena,
     MsgCallback_pfn msg_callback
 ) {
-    String log_str = STACK_STR(256);
+    String log_str = STACK_STR(512);
     *device = (VulkanDevice){0};
 
     u32 device_count = 0;
@@ -995,7 +1004,7 @@ createVulkanDevice(
             goto _critical_fail;
         }
 
-        for(u32 i = 0; i < device_count; i++) {
+        for(u32 i = 1; i < device_count; i++) {
             for(u32 j = 0; j < i; j++) {
                 if(compareDevices(U32_MAX, NULL, &devices[j], &devices[i])) {
                     DeviceData temp = devices[j];
@@ -1018,14 +1027,46 @@ createVulkanDevice(
         /* attempt to create devices that are worse if creation fails */
         for(u32 i = 0; i < device_count; i++) {
             /* LOG */ {
+                const char *device_model_str = "undefined";
+                if(devices[i].device_model == VULKAN_DEVICE_MODEL_DESCRETE) {
+                    device_model_str = "descrete";
+                }
+                if(devices[i].device_model == VULKAN_DEVICE_MODEL_INTEGRATED) {
+                    device_model_str = "intergated";
+                }
+
+                const char *memory_model_str = "undefined";
+                if(devices[i].memory_model == VULKAN_MEMORY_MODEL_HOST_DEVICE) {
+                    memory_model_str = "host-device";
+                }
+                if(devices[i].memory_model == VULKAN_MEMORY_MODEL_FUSED_DEVICE) {
+                    memory_model_str = "fused-device";
+                }
+                if(devices[i].memory_model == VULKAN_MEMORY_MODEL_FUSED_HOST) {
+                    memory_model_str = "fused-host";
+                }
+
                 stringPattern(
                     &CONST_STRING(
                         "trying to create device {\n"
                         "\tid: %u32\n"
                         "\tname: \"%c\"\n"
+                        "\tdevice model: %c\n"
+                        "\tmemory model: %c\n"
+                        "\trender queue: %u32\n"
+                        "\ttransfer queue: %u32\n"
+                        "\tcompute queue: %u32\n"
                         "}"
                     ),
-                    (const void *[]){&devices[i].device_id, devices[i].name},
+                    (const void *[]){
+                        &devices[i].device_id, 
+                        devices[i].name,
+                        device_model_str,
+                        memory_model_str,
+                        &devices[i].render_queue_id,
+                        &devices[i].transfer_queue_id,
+                        &devices[i].compute_queue_id
+                    },
                     &log_str
                 );
                 MSG_LOG(msg_callback, &log_str);
@@ -1055,46 +1096,80 @@ createVulkanDevice(
                 };
             }
 
+            VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamic_rendering_features = {
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR,
+                .dynamicRendering = TRUE,
+                .pNext = NULL
+            };
             VkDeviceCreateInfo device_info = {
                 .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
                 .enabledExtensionCount = required_extension_count,
                 .ppEnabledExtensionNames = required_extensions,
                 .queueCreateInfoCount = queue_count,
-                .pQueueCreateInfos = queue_infos
+                .pQueueCreateInfos = queue_infos,
+                .pNext = &dynamic_rendering_features
             };
 
             VkDevice created_device = NULL;
             /* try to create device */
-            if(vkCreateDevice(devices[i].device, &device_info, NULL, &created_device) == VK_SUCCESS) {
-                *device = (VulkanDevice) {
-                    .physical_device = devices[i].device,
-                    .device = created_device,
-                    .device_model = devices[i].device_model,
-                    .memory_model = devices[i].memory_model,
-                    .render_queue_id = devices[i].render_queue_id,
-                    .transfer_queue_id = devices[i].transfer_queue_id,
-                    .compute_queue_id = devices[i].compute_queue_id
-                };
+            if(vkCreateDevice(devices[i].device, &device_info, NULL, &created_device) != VK_SUCCESS) {
+                MSG_LOG(msg_callback, &TRACED_STR("could not create device"));
+                goto _device_create_fail;
+            }
 
-                /* get device queues */
-                vkGetDeviceQueue(created_device, devices[i].render_queue_id, 0, &device->render_queue);
-                if(devices[i].transfer_queue_id != U32_MAX) {
-                    vkGetDeviceQueue(created_device, devices[i].transfer_queue_id, 0, &device->transfer_queue);
+            *device = (VulkanDevice) {
+                .physical_device = devices[i].device,
+                .device = created_device,
+                .device_model = devices[i].device_model,
+                .memory_model = devices[i].memory_model,
+                .render_queue_id = devices[i].render_queue_id,
+                .transfer_queue_id = devices[i].transfer_queue_id,
+                .compute_queue_id = devices[i].compute_queue_id
+            };
+
+            /* get device queues */
+            vkGetDeviceQueue(created_device, devices[i].render_queue_id, 0, &device->render_queue);
+            if(devices[i].transfer_queue_id != U32_MAX) {
+                vkGetDeviceQueue(created_device, devices[i].transfer_queue_id, 0, &device->transfer_queue);
+            }
+            if(devices[i].compute_queue_id != U32_MAX) {
+                vkGetDeviceQueue(created_device, devices[i].compute_queue_id, 0, &device->compute_queue);
+            }
+
+            /* cppy device formats */
+            device->screen_color_space = devices[i].screen_color_space;
+            device->screen_color_format = devices[i].screen_color_format;
+            device->depth_format = devices[i].depth_format;
+            device->present_mode = devices[i].present_mode;
+            device->color_format = devices[i].color_format;
+
+            device->begin_rendering_khr = (PFN_vkCmdBeginRenderingKHR)vkGetDeviceProcAddr(created_device, "vkCmdBeginRenderingKHR");
+            device->end_rendering_khr = (PFN_vkCmdEndRenderingKHR)vkGetDeviceProcAddr(created_device, "vkCmdEndRenderingKHR");
+            if(!device->begin_rendering_khr || !device->begin_rendering_khr) {
+                MSG_LOG(msg_callback, &TRACED_STR("could not load device extensions"));
+                goto _load_device_extensions_fail;
+            }
+
+            /* LOG */ {
+                stringZero(&log_str);
+                stringAddCstring(&log_str, "created vulkan device with extensions: {\n");
+                for(u32 i = 0; i < required_extension_count; i++) {
+                    stringAddCstring(&log_str, "\t\"");
+                    stringAddCstring(&log_str, required_extensions[i]);
+                    stringAddCstring(&log_str, "\"\n");
                 }
-                if(devices[i].compute_queue_id != U32_MAX) {
-                    vkGetDeviceQueue(created_device, devices[i].compute_queue_id, 0, &device->compute_queue);
-                }
+                stringAddChar(&log_str, '}');
+                MSG_LOG(msg_callback, &log_str);
+            }
+            
+            goto _success;
 
-                /* cppy device formats */
-                device->screen_color_space = devices[i].screen_color_space;
-                device->screen_color_format = devices[i].screen_color_format;
-                device->depth_format = devices[i].depth_format;
-                device->present_mode = devices[i].present_mode;
-                device->color_format = devices[i].color_format;
-
-                MSG_LOG(msg_callback, &CONST_STRING("successfuly mounted device"));
-
-                goto _success;
+            /* failed to create device */
+            _load_device_extensions_fail: {
+                vkDestroyDevice(created_device, NULL);
+            }
+            _device_create_fail: {
+                *device = (VulkanDevice){0};
             }
         }
 
@@ -1126,7 +1201,6 @@ destroyVulkanDevice(
         MSG_WARNING(msg_callback, &TRACED_STR("can not destroy device, pointer is null"));
         result = FALSE;
     }
-
     *device = (VulkanDevice){0};
 
     return result;
@@ -1169,8 +1243,8 @@ createVulkan(
     }
 
     /* structs in segment */
-    VulkanObjects *vulkan_objects = segment->vulkan_objects_begin;
-    VulkanDevice *vulkan_device = segment->vulkan_objects_end_device_begin;
+    VulkanObjects *vulkan_objects = (VulkanObjects *)segment->vulkan_objects;
+    VulkanDevice *vulkan_device = (VulkanDevice *)segment->vulkan_device;
 
     /* create vulkan objects */
     if(!createVulkanObjects(
@@ -1180,8 +1254,8 @@ createVulkan(
         input->name, 
         vulkan_objects,
         (Arena[1]){(Arena) {
-            segment->vulkan_objects_end_device_begin,
-            segment->vulkan_objects_end_device_begin,
+            segment->resource_address,
+            segment->resource_address,
             segment->segment_end
         }},
         msg_callback
@@ -1194,26 +1268,14 @@ createVulkan(
         vulkan_objects,
         vulkan_device,
         (Arena[1]){(Arena) {
-            segment->vulkan_device_end,
-            segment->vulkan_device_end,
+            segment->resource_address,
+            segment->resource_address,
             segment->segment_end
         }},
         msg_callback
     )) {
         MSG_ERROR(msg_callback, &TRACED_STR("failed to create vulkan device"));
         goto _critical_fail;
-    }
-
-    /* Protect write to static part of segment */ 
-    if(input->flags & VULKAN_IN_PROTECT_MEMORY) {
-        #ifdef _WIN32
-            u32x old_protection = 0; /* why this exists? winapi! */
-            if(!VirtualProtect(segment->segment_begin, (u64)segment->static_end_dynamic_begin - (u64)segment->segment_begin, PAGE_READONLY, &old_protection)) {
-                MSG_ERROR(msg_callback, &TRACED_STR("failed to protect vulkan segment static part"));
-                goto _critical_fail;
-            }
-        #endif /* _WIN32 */
-        MSG_LOG(msg_callback, &CONST_STRING("protected static part of vulkan segment"));
     }
 
     return (VulkanHandle)segment;
@@ -1229,23 +1291,11 @@ destroyVulkan(
     VulkanHandle vulkan
 ) {
     VulkanSegment *vulkan_segment = (VulkanSegment *)vulkan;
-    VulkanObjects *vulkan_objects = (VulkanObjects *)vulkan_segment->vulkan_objects_begin;
-    VulkanDevice *vulkan_device = (VulkanDevice *)vulkan_segment->vulkan_objects_end_device_begin;
+    VulkanObjects *vulkan_objects = (VulkanObjects *)vulkan_segment->vulkan_objects;
+    VulkanDevice *vulkan_device = (VulkanDevice *)vulkan_segment->vulkan_device;
 
     const MsgCallback_pfn msg_callback = vulkan_objects->msg_callback;
     b32 result = TRUE;
-
-    /* remove protection from segment */
-    if(vulkan_objects->flags & VULKAN_IN_PROTECT_MEMORY) {
-        #ifdef _WIN32
-            u32x old_protection = 0; /* why this exists? winapi! */
-            if(!VirtualProtect(vulkan_segment->segment_begin, (u64)vulkan_segment->vulkan_device_end - (u64)vulkan_segment->segment_begin, PAGE_READWRITE, &old_protection)) {
-                MSG_WARNING(msg_callback, &TRACED_STR("failed to turn off protection of vulkan segment static part"));   
-            }
-        #endif /* _WIN32 */
-
-        MSG_LOG(msg_callback, &CONST_STRING("removed protection from static part of vulkan segment"));
-    }
 
     if(!destroyVulkanDevice(vulkan_objects, vulkan_device, msg_callback)) {
         MSG_WARNING(msg_callback, &TRACED_STR("failed to destroy vulkan device"));
@@ -1257,6 +1307,8 @@ destroyVulkan(
         MSG_WARNING(msg_callback, &TRACED_STR("failed to destroy vulkan objects"));
         result = FALSE;
     }
-    
+
+    MSG_LOG(msg_callback, &CONST_STRING("destroyed vulkan"));
+
     return result;
 }

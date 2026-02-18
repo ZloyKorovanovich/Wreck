@@ -8,8 +8,7 @@ typedef void *VulkanHandle;
 typedef enum {
     VULKAN_IN_FLAGS_NONE = 0x0,
     VULKAN_IN_FLAG_DEBUG = 0x1,
-    VULKAN_IN_FLAG_RESIZE = 0x2,
-    VULKAN_IN_PROTECT_MEMORY = 0x4
+    VULKAN_IN_FLAG_RESIZE = 0x2
 } VulkanInFlags;
 
 typedef enum {
@@ -49,7 +48,49 @@ typedef struct {
 VulkanHandle createVulkan(const CreateVulkanIn *input, CreateVulkanOut *output);
 b32 destroyVulkan(VulkanHandle vulkan);
 
-b32 createVulkanDynamic(VulkanHandle vulkan);
+
+#define SHADER_VERTEX_ENTRY "vertexMain"
+#define SHADER_FRAGMENT_ENTRY "fragmentMain"
+#define SHADER_COMPUTE_ENTRY "computeEntry"
+
+typedef struct {
+    f32 position[4];
+    f32 normal[4];
+    f32 texcoord[4];
+} Vertex;
+
+typedef enum {
+    VULKAN_SHADER_FLAGS_NONE = 0x0,
+    VULKAN_SHADER_FLAG_USE_VERTEX_POSITION = 0x1,
+    VULKAN_SHADER_FLAG_USE_VERTEX_NORMAL = 0x2,
+    VULKAN_SHADER_FLAG_USE_VERTEX_TEXCOORD = 0x4,
+    VULKAN_SHADER_FLAG_TRANSPARENT = 0x8
+} VulkanShaderFlags;
+
+typedef struct {
+    const char *name;
+    const void *vertex_spv;
+    const void *fragment_spv;
+    u32 vertex_spv_size;
+    u32 fragment_spv_size;
+    VulkanShaderFlags flags;
+} VulkanGraphicsPipelineInfo;
+
+typedef struct {
+    const char *name;
+    const void *compute_spv;
+    u32 compute_spv_size;
+    VulkanShaderFlags flags;
+} VulkanComputePipelineInfo;
+
+typedef struct {
+    const VulkanGraphicsPipelineInfo *graphics_shaders;
+    const VulkanComputePipelineInfo *compute_shaders; 
+    u32 graphics_shader_count;
+    u32 compute_shader_count;
+} CreateVulkanDynamicIn;
+
+b32 createVulkanDynamic(VulkanHandle vulkan, const CreateVulkanDynamicIn *input);
 b32 destroyVulkanDynamic(VulkanHandle vulkan);
 b32 runVulkanLoop(VulkanHandle vulkan);
 
@@ -58,7 +99,6 @@ b32 runVulkanLoop(VulkanHandle vulkan);
 #define MAX_PHYSICAL_DEVICE_COUNT (4)
 
 
-#define INCLUDE_VULKAN_INTERNAL
 #ifdef INCLUDE_VULKAN_INTERNAL
     
     #ifdef _WIN32
@@ -101,6 +141,8 @@ b32 runVulkanLoop(VulkanHandle vulkan);
         VkFormat depth_format;
         VkPresentModeKHR present_mode;
 
+        PFN_vkCmdBeginRenderingKHR begin_rendering_khr;
+        PFN_vkCmdEndRenderingKHR end_rendering_khr;
     } VulkanDevice;
 
     /* DYNAMIC */
@@ -109,6 +151,22 @@ b32 runVulkanLoop(VulkanHandle vulkan);
     #define MAX_RES_X (5120)
     #define MAX_RES_Y (2880)
     #define SCREEN_MAX_PIXEL_COUNT (5120 * 2880)
+    
+    typedef enum {
+        DESCRIPTOR_SET_GENERAL_ID   = 0,
+        DESCRIPTOR_SET_BUFFERS_ID   = 1,
+        DESCRIPTOR_SET_TEXTURES_ID  = 2,
+        DESCRIPTOR_SET_COUNT
+    } DescriptorSetIds;
+    
+    typedef struct {
+        u64 size;
+        u32 memoryBits;
+        u32 mandatory_flags;
+        u32 restricted_flags;
+        u32 positive_flags;
+        u32 negative_flags;
+    } VramAllocationRequest;
 
     typedef struct {
         VkDeviceMemory memory;
@@ -119,10 +177,10 @@ b32 runVulkanLoop(VulkanHandle vulkan);
 
     typedef struct {
         VkPhysicalDeviceMemoryProperties memory_properties;
+        VkDevice device;
         u32 vram_allocation_count;
     } VulkanMemory;
 
-    
     typedef struct {
         VkSwapchainKHR swapchain;
         VramAllocation vram_allocation;
@@ -138,35 +196,57 @@ b32 runVulkanLoop(VulkanHandle vulkan);
     } VulkanScreen;
 
     typedef struct {
-        /* segment begin, static begin */
-        void *segment_begin;
-        void *vulkan_objects_begin;
-        void *vulkan_objects_end_device_begin;
-        void *vulkan_device_end;
+        VkDescriptorPool pool;
+        VkDescriptorSetLayout layouts[DESCRIPTOR_SET_COUNT];
+        VkDescriptorSet sets[DESCRIPTOR_SET_COUNT];
+    } VulkanDescriptors;
 
-        void *static_end_dynamic_begin;
-        /* static end, dynamic begin */
-        void *vulkan_textures_begin;
-        void *vulkan_textures_end;
-        /* dynamic end, segment end */
+    typedef struct {
+        VkPipeline *graphics_pipelines;
+        VkPipeline *compute_pipelines;
+        u32 graphics_pipeline_count;
+        u32 compute_pipeline_count;
+        VkPipelineLayout pipeline_layout;
+    } VulkanPipelines;
+
+    typedef struct {
+        void *vulkan_objects;
+        void *vulkan_device;
+
+        void *vulkan_memory;
+        void *vulkan_screen;
+        void *vulkan_pipelines;
+
+        void *resource_address;
+        void *resource_shaders;
+        void *resource_buffers;
+
         void *segment_end;
     } VulkanSegment;
 
-    #define STATIC_PART_SIZE (ALIGN(sizeof(VulkanSegment) + sizeof(VulkanObjects) + sizeof(VulkanDevice), MEMORY_PAGE_SIZE))
-    #define MIN_VULKAN_SEGMENT_SIZE (ALIGN(STATIC_PART_SIZE, ALLOCATION_GRANULARITY))
+    #define VULKAN_STRUCTS_SIZE         \
+    (ALIGN(                             \
+        sizeof(VulkanSegment) +         \
+        sizeof(VulkanObjects) +         \
+        sizeof(VulkanDevice) +          \
+        sizeof(VulkanMemory) +          \
+        sizeof(VulkanScreen) +          \
+        sizeof(VulkanDescriptors) +     \
+        sizeof(VulkanPipelines),        \
+        MEMORY_PAGE_SIZE                \
+    ))
 
+    #define MIN_VULKAN_SEGMENT_SIZE (ALIGN(VULKAN_STRUCTS_SIZE, ALLOCATION_GRANULARITY))
+
+    #define MAX_PIPELINE_COUNT (1024)
+    #define MAX_PIPELINE_DEPENDENCY_COUNT (2048)
+    #define MAX_PIPELINES_SIZE (MAX_PIPELINE_COUNT * sizeof(VkPipeline))
 
     /*  Segment layout representation:
-    +----------------+---------------+-----------------+---------------+---------------+--------+
-    | VULKAN OBJECTS | VULKAN DEVICE |                 | VULKAN MEMORY | VULKAN SCREEN |        |
-    +----------------+---------------+-----------------+---------------+---------------+--------+
-                                            static end, dynamic begin 
-                                                (page size aligned)                                 
-                                                
-    Once static part is created and written it may transition to read-only protection mode, if flag is set.
-    The protection is removed after destruction of vulkan.                                                  */
-
-    
+    +----------------+---------------+---------------+---------------+--------------------+----------------+-------------------------------------------------------+
+    | VULKAN OBJECTS | VULKAN DEVICE | VULKAN MEMORY | VULKAN SCREEN | VULKAN DESCRIPTORS | VULKAN SHADERS |                                                       |                                                       |
+    +----------------+---------------+---------------+---------------+--------------------+----------------+-------------------------------------------------------+
+                                                                                                resource address                                                    */
 
 
 #endif /* #ifdef INCLUDE_VULKAN_INTERNAL */

@@ -33,6 +33,17 @@ msgCallback(
     }
 }
 
+u64 
+readShaderFile(
+    const char *name, 
+    Buffer *buffer
+) {
+    u64 file_size = fileToBuffer(&CONST_STRING(name), buffer);
+    if(file_size > buffer->size || file_size == 0) {
+        return 0;
+    }
+    return file_size;
+}
 
 i32 
 main(
@@ -51,19 +62,44 @@ main(
         .msg_callback = msgCallback,
         .segment = &segment,
         .name = "Wreck 3D",
-        .flags = VULKAN_IN_FLAG_DEBUG | VULKAN_IN_FLAG_RESIZE | VULKAN_IN_PROTECT_MEMORY,
+        .flags = VULKAN_IN_FLAG_DEBUG | VULKAN_IN_FLAG_RESIZE,
         .x = 800,
         .y = 600
     };
+
+    Buffer vertex_shader = (Buffer){.buffer = (char[1024 * 4]){0}, .size = 1024 * 4};
+    Buffer fragment_shader = (Buffer){.buffer = (char[1024 * 4]){0}, .size = 1024 * 4};
+    u64 vertex_size = 0;
+    u64 fragment_size = 0;
+    /* TEST LOAD SHADERS */ {
+        vertex_size = readShaderFile("out/data/triangle_v.spv", &vertex_shader);
+        fragment_size = readShaderFile("out/data/triangle_f.spv", &fragment_shader);
+        if(vertex_size == 0 || fragment_size == 0) {
+            MSG_ERROR(msgCallback, &TRACED_STR("failed to load shaders to buffers"));
+            return -1;
+        }
+    }
     CreateVulkanOut create_vulkan_out = (CreateVulkanOut){0};
+    CreateVulkanDynamicIn create_vulkan_dynamic_in = {
+        .graphics_shaders = (VulkanGraphicsPipelineInfo[]) {
+            (VulkanGraphicsPipelineInfo) {
+                .name = "traingle",
+                .vertex_spv = vertex_shader.buffer,
+                .fragment_spv = fragment_shader.buffer,
+                .vertex_spv_size = vertex_size,
+                .fragment_spv_size = fragment_size
+            }
+        },
+        .graphics_shader_count = 1
+    };
 
     VulkanHandle vulkan = createVulkan(&create_vulkan_in, &create_vulkan_out);
     if(!vulkan) {
         MSG_ERROR(msgCallback, &TRACED_STR("failed to create vulkan"));
         return -1;
     }
-    
-    if(!createVulkanDynamic(vulkan)) {
+
+    if(!createVulkanDynamic(vulkan, &create_vulkan_dynamic_in)) {
         MSG_ERROR(msgCallback, &TRACED_STR("failed to create dynamic vulkan"));
         return -1;
     }
