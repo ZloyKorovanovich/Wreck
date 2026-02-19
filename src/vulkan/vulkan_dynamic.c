@@ -285,6 +285,8 @@ createSwapchain(
         }
     }
     
+    vulkan_screen->screen_size_x = surface_extent.width;
+    vulkan_screen->screen_size_y = surface_extent.height;
     /* success */
     return TRUE;
     
@@ -309,7 +311,7 @@ createSwapchain(
 }
 
 static b32 
-createScreenTextures(
+createVulkanScreen(
     const VulkanObjects *vulkan_objects,
     const VulkanDevice *vulkan_device,
     VulkanMemory *vulkan_memory,
@@ -508,7 +510,7 @@ createScreenTextures(
 
 
 static b32
-destroyScreenTextures(
+destroyVulkanScreen(
     const VulkanObjects *vulkan_objects,
     const VulkanDevice *vulkan_device,
     VulkanMemory *vulkan_memory,
@@ -564,6 +566,201 @@ destroyScreenTextures(
     return result;
 }
 
+/*  ===============================================================
+        VULKAN DESCRIPTORS
+    =============================================================== */
+/*  HLSL style binding indices [binding, set]
+    set 0:
+        [0, 0] uniform buffer
+        [1, 0] repeat sampler
+        [2, 0] clamp sampler
+        [3, 0] screen sampled color
+        [4, 0] screen storage color
+
+    set 1:
+        [0, 1] storage buffer 0
+        ...
+        [n, 1] storage buffer n, where n is storage buffer count
+
+    set 3:
+        undefined
+*/
+
+static b32
+createVulkanDescritors(
+    const VulkanDevice *vulkan_device,
+    MsgCallback_pfn msg_callback,
+    VulkanDescriptors *descriptors
+) {
+    *descriptors = (VulkanDescriptors){0};
+
+    /* CREATE DESCRIPTOR POOL */ {
+        const VkDescriptorPoolSize pool_sizes[] = {
+            (VkDescriptorPoolSize) {
+                .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .descriptorCount = 1
+            },
+            (VkDescriptorPoolSize) {
+                .type = VK_DESCRIPTOR_TYPE_SAMPLER,
+                .descriptorCount = 2
+            },
+            (VkDescriptorPoolSize) {
+                .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                .descriptorCount = 1
+            },
+            (VkDescriptorPoolSize) {
+                .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .descriptorCount = 1
+            },
+            (VkDescriptorPoolSize) {
+                .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = 16
+            }
+        };
+
+        const VkDescriptorPoolCreateInfo pool_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .maxSets = DESCRIPTOR_SET_COUNT,
+            .poolSizeCount = ARRAY_SIZE(pool_sizes),
+            .pPoolSizes = pool_sizes
+        };
+        if(vkCreateDescriptorPool(vulkan_device->device, &pool_info, NULL, &descriptors->pool) != VK_SUCCESS) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to create vulkan descriptor pool"));
+            goto _descriptor_pool_fail;
+        }
+    }
+
+    /* GENERAL LAYOUT */ {
+        const VkDescriptorSetLayoutBinding general_layout_bindings[] = {
+            (VkDescriptorSetLayoutBinding) {
+                .binding = 0,
+                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_ALL
+            },
+            (VkDescriptorSetLayoutBinding) {
+                .binding = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_ALL
+            },
+            (VkDescriptorSetLayoutBinding) {
+                .binding = 2,
+                .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_ALL
+            },
+            (VkDescriptorSetLayoutBinding) {
+                .binding = 3,
+                .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_ALL
+            },
+            (VkDescriptorSetLayoutBinding) {
+                .binding = 4,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_ALL
+            },
+        };
+
+        const VkDescriptorSetLayoutCreateInfo general_layout_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = ARRAY_SIZE(general_layout_bindings),
+            .pBindings = general_layout_bindings
+        };
+
+        if(vkCreateDescriptorSetLayout(vulkan_device->device, &general_layout_info, NULL, &descriptors->layouts[DESCRIPTOR_SET_GENERAL_ID]) != VK_SUCCESS) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to create general descriptor set layout"));
+            goto _general_set_layout_fail;
+        }
+    }
+
+    /* BUFFERS LAYOUT */ {
+        VkDescriptorSetLayoutBinding buffers_layout_bindings[16] = {0};
+        for(u32 i = 0; i < ARRAY_SIZE(buffers_layout_bindings); i++) {
+            buffers_layout_bindings[i] = (VkDescriptorSetLayoutBinding) {
+                .binding = i,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_ALL
+            };
+        }
+
+        const VkDescriptorSetLayoutCreateInfo buffers_layout_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = ARRAY_SIZE(buffers_layout_bindings),
+            .pBindings = buffers_layout_bindings
+        };
+
+        if(vkCreateDescriptorSetLayout(vulkan_device->device, &buffers_layout_info, NULL, &descriptors->layouts[DESCRIPTOR_SET_BUFFERS_ID]) != VK_SUCCESS) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to create buffers descriptor set layout"));
+            goto _buffers_set_layout_fail;
+        }
+    }
+
+    /* DECRIPTOR SETS */ {
+        const VkDescriptorSetAllocateInfo descriptor_sets_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = descriptors->pool,
+            .descriptorSetCount = DESCRIPTOR_SET_COUNT,
+            .pSetLayouts = descriptors->layouts
+        };
+
+        if(vkAllocateDescriptorSets(vulkan_device->device, &descriptor_sets_info, descriptors->sets) != VK_SUCCESS) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate descriptor sets"));
+            goto _descriptors_sets_fail;
+        }
+    }
+
+    /* success */
+    return TRUE;
+
+    _descriptors_sets_fail: {
+        vkDestroyDescriptorSetLayout(vulkan_device->device, descriptors->layouts[DESCRIPTOR_SET_BUFFERS_ID], NULL);
+    }
+    _buffers_set_layout_fail: {
+        vkDestroyDescriptorSetLayout(vulkan_device->device, descriptors->layouts[DESCRIPTOR_SET_GENERAL_ID], NULL);
+    }
+    _general_set_layout_fail: {
+        vkDestroyDescriptorPool(vulkan_device->device, descriptors->pool, NULL);
+    }
+    _descriptor_pool_fail: {
+        *descriptors = (VulkanDescriptors){0};
+        return FALSE;
+    }
+}
+
+static b32
+destroyVulkanDescriptors(
+    const VulkanDevice *vulkan_device,
+    MsgCallback_pfn msg_callback,
+    VulkanDescriptors *descriptors
+) {
+    String log_str = STACK_STR(256);
+    b32 result = TRUE;
+
+    VkDescriptorSetLayout *layouts = descriptors->layouts;
+    for(u32 i = 0; i < DESCRIPTOR_SET_COUNT; i++) {
+        if(layouts[i]) {
+            vkDestroyDescriptorSetLayout(vulkan_device->device, layouts[i], NULL); 
+        } else {
+            stringPattern(&TRACED_STR("trying to destroy descriptor set layout that is null id: %u32"), (const void *[]){&i}, &log_str);
+            MSG_WARNING(msg_callback, &log_str);
+            result = FALSE;
+        }
+    }
+
+    if(descriptors->pool) {
+        vkDestroyDescriptorPool(vulkan_device->device, descriptors->pool, NULL);
+    } else {
+        MSG_WARNING(msg_callback, &TRACED_STR("trying to destroy descripotr pool that it is null"));
+        result = FALSE;
+    }
+
+    *descriptors = (VulkanDescriptors){0};
+    return result;
+}
 
 /*  ===============================================================
         VULKAN PIPELINES
@@ -781,10 +978,10 @@ createPipelines(
     VulkanPipelines *vulkan_pipelines,
     void *resource_shaders
 ) {
+    *vulkan_pipelines = (VulkanPipelines) {0};
     String log_str = STACK_STR(512);
     const char *empty_name = " ";
 
-    *vulkan_pipelines = (VulkanPipelines) {0};
     if(graphics_pipeline_count == 0 && compute_pipeline_count == 0) { 
         MSG_LOG(msg_callback, &CONST_STRING("no vulkan pipelines created"));
         goto _success;
@@ -1070,6 +1267,7 @@ createPipelines(
         }
     }
     _prealloc_fail: {
+        *vulkan_pipelines = (VulkanPipelines){0};
         return FALSE;
     }
 }
@@ -1114,6 +1312,133 @@ destroyPipelines(
         result = FALSE;
     }
 
+    *vulkan_pipelines = (VulkanPipelines){0};
+
+    return result;
+}
+
+/*  ===============================================================
+        RENDER OBJECTS
+    =============================================================== */
+
+typedef struct {
+    VkCommandBuffer command_buffer;
+    VkFence frame_fence;
+    VkSemaphore image_available_semaphore;
+    VkSemaphore image_submit_semaphores[MAX_SWAPCHAIN_IMAGE_COUNT];
+} RenderObjects;
+
+static b32 
+createRenderObjects(
+    const VulkanDevice *vulkan_device,
+    u32 swapchain_image_count,
+    MsgCallback_pfn msg_callback,
+    RenderObjects *render_objects
+) {
+    *render_objects = (RenderObjects){0};
+    VkDevice device= vulkan_device->device;
+
+    /* create command buffer */
+    const VkCommandBufferAllocateInfo command_buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = vulkan_device->render_command_pool,
+        .commandBufferCount = 1
+    };
+    if(vkAllocateCommandBuffers(device, &command_buffer_info, &render_objects->command_buffer) != VK_SUCCESS) {
+        MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate render loop command buffer"));
+        goto _command_buffer_fail;
+    }
+
+    /* create frame fence, used to sync submits to render queue */
+    const VkFenceCreateInfo frame_fence_info = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .flags = VK_FENCE_CREATE_SIGNALED_BIT
+    };
+    if(vkCreateFence(device, &frame_fence_info, NULL, &render_objects->frame_fence) != VK_SUCCESS) {
+        MSG_ERROR(msg_callback, &TRACED_STR("failed to create frame fence"));
+        goto _frame_fence_fail;
+    }
+
+    /* create semaphores */
+    const VkSemaphoreCreateInfo semaphore_info = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
+    };
+    /* image available semaphore, indicates, that image is ready to use for rendering */
+    if(vkCreateSemaphore(device, &semaphore_info, NULL, &render_objects->image_available_semaphore) != VK_SUCCESS) {
+        MSG_ERROR(msg_callback, &TRACED_STR("failed to create image available semaphore"));
+        goto _image_available_semaphore_fail;
+    }
+    /* image finished semaphores, one per each swapchain image, indicates, that image is submited to queue */
+    VkSemaphore *image_submit_semaphores = render_objects->image_submit_semaphores;
+    for(u32 i = 0; i < swapchain_image_count; i++) {
+        if(vkCreateSemaphore(device, &semaphore_info, NULL, &image_submit_semaphores[i]) != VK_SUCCESS) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to create image submit semaphore"));
+            image_submit_semaphores[i] = NULL;
+            goto _image_submit_semaphore_fail;
+        }
+    }
+
+    return TRUE;
+
+    _image_submit_semaphore_fail: {
+        for(u32 i = 0; image_submit_semaphores[i] != NULL; i++) {
+            vkDestroySemaphore(device, image_submit_semaphores[i], NULL);
+        }
+    }
+    _image_available_semaphore_fail: {
+        vkDestroyFence(device, render_objects->frame_fence, NULL);
+    }
+    _frame_fence_fail: {
+        vkFreeCommandBuffers(device, vulkan_device->render_command_pool, 1, &render_objects->command_buffer);
+    };
+    _command_buffer_fail: {
+        return FALSE;
+    }
+}
+
+static b32
+detsroyRenderObjects(
+    const VulkanDevice *vulkan_device,
+    u32 swapchain_image_count,
+    MsgCallback_pfn msg_callback,
+    RenderObjects *render_objects
+) {
+    VkDevice device = vulkan_device->device;
+    b32 result = TRUE;
+
+    VkSemaphore *image_submit_semaphores = render_objects->image_submit_semaphores;
+    for(u32 i = 0; i < swapchain_image_count; i++) {
+        if(image_submit_semaphores[i]) {
+            vkDestroySemaphore(device, image_submit_semaphores[i], NULL);
+        } else {
+            MSG_WARNING(msg_callback, &TRACED_STR("trying to destroy image submit semaphore, but handle is null"));
+            result = FALSE;
+        }
+    }
+
+    if(render_objects->image_available_semaphore) {
+        vkDestroySemaphore(device, render_objects->image_available_semaphore, NULL);
+    } else {
+        MSG_WARNING(msg_callback, &TRACED_STR("trying to destroy image available semaphore, but handle is null"));
+        result = FALSE;
+    }
+
+    if(render_objects->frame_fence) {
+        vkDestroyFence(device, render_objects->frame_fence, NULL);
+    } else {
+        MSG_WARNING(msg_callback, &TRACED_STR("trying to destroy frame fence, but handle is null"));
+        result = FALSE;
+    }
+
+    if(render_objects->command_buffer) {
+        vkFreeCommandBuffers(device, vulkan_device->render_command_pool, 1, &render_objects->command_buffer);
+    } else {
+        MSG_WARNING(msg_callback, &TRACED_STR("trying to destroy render command buffer, but handle is null"));
+        result = FALSE;
+    }
+
+    *render_objects = (RenderObjects){0};
+
     return result;
 }
 
@@ -1132,6 +1457,7 @@ b32 createVulkanDynamic(
 
     VulkanMemory *vulkan_memory = (VulkanMemory *)vulkan_segment->vulkan_memory;
     VulkanScreen *vulkan_screen = (VulkanScreen *)vulkan_segment->vulkan_screen;
+    VulkanDescriptors *vulkan_descriptors = (VulkanDescriptors *)vulkan_segment->vulkan_descriptors;
 
     if(!createVulkanMemory(
         vulkan_device,
@@ -1142,7 +1468,7 @@ b32 createVulkanDynamic(
         goto _critical_fail;
     }
 
-    if(!createScreenTextures(
+    if(!createVulkanScreen(
         vulkan_objects, 
         vulkan_device,
         vulkan_memory,
@@ -1150,6 +1476,15 @@ b32 createVulkanDynamic(
         vulkan_screen
     )) {
         MSG_ERROR(msg_callback, &TRACED_STR("failed to create vulkan screen textures"));
+        goto _critical_fail;
+    }
+
+    if(!createVulkanDescritors(
+        vulkan_device,
+        msg_callback,
+        vulkan_descriptors
+    )) {
+        MSG_ERROR(msg_callback, &TRACED_STR("failed to create vulkan descriptors"));
         goto _critical_fail;
     }
 
@@ -1185,6 +1520,7 @@ b32 destroyVulkanDynamic(
     VulkanMemory *vulkan_memory = (VulkanMemory *)vulkan_segment->vulkan_memory;
     VulkanScreen *vulkan_screen = (VulkanScreen *)vulkan_segment->vulkan_screen;
     VulkanPipelines *vulkan_pipelines = (VulkanPipelines *)vulkan_segment->vulkan_pipelines;
+    VulkanDescriptors *vulkan_descriptors = (VulkanDescriptors *)vulkan_segment->vulkan_descriptors;
     b32 result = TRUE;
 
     if(!destroyPipelines(
@@ -1193,9 +1529,19 @@ b32 destroyVulkanDynamic(
         msg_callback
     )) {
         MSG_WARNING(msg_callback, &TRACED_STR("failed to destroy vulkan pipelines"));
+        result = FALSE;
     }
 
-    if(!destroyScreenTextures(
+    if(!destroyVulkanDescriptors(
+        vulkan_device,
+        msg_callback,
+        vulkan_descriptors
+    )) {
+        MSG_WARNING(msg_callback, &TRACED_STR("failed to destroy vulkan descriptors"));
+        result = FALSE;
+    }
+
+    if(!destroyVulkanScreen(
         vulkan_objects, 
         vulkan_device, 
         vulkan_memory,
@@ -1217,16 +1563,204 @@ b32 destroyVulkanDynamic(
     return result;
 }
 
-b32
+b32 
 runVulkanLoop(
-    VulkanHandle vulkan
+    VulkanHandle vulkan, 
+    VulkanLoop_pfn loop_callback,
+    MsgCallback_pfn msg_callback
 ) {
     const VulkanSegment *vulkan_segment = (VulkanSegment *)vulkan;
     const VulkanObjects *vulkan_objects = (VulkanObjects *)vulkan_segment->vulkan_objects;
+    const VulkanDevice *vulkan_device = (VulkanDevice *)vulkan_segment->vulkan_device;
+    VulkanScreen *vulkan_screen = (VulkanScreen *)vulkan_segment->vulkan_screen;
+
+    RenderObjects render_objects = (RenderObjects){0};
+    if(!createRenderObjects(
+        vulkan_device, 
+        vulkan_screen->swapchain_image_count, 
+        msg_callback, 
+        &render_objects
+    )) {
+        MSG_ERROR(msg_callback, &TRACED_STR("failed to create vulkan render objects"));
+        goto _render_objects_create_fail;
+    }
+
+    MSG_LOG(msg_callback, &CONST_STRING("starting vulkan render loop"));
 
     while(processWindow(vulkan_objects->window)) {
+        u32 render_image_id = U32_MAX;
+
+        vkWaitForFences(vulkan_device->device, 1, &render_objects.frame_fence, VK_TRUE, U64_MAX);
+
+        /* ACQUIRE */ {
+            VkResult acquire_result = vkAcquireNextImageKHR(
+                vulkan_device->device, 
+                vulkan_screen->swapchain, 
+                U64_MAX, 
+                render_objects.image_available_semaphore, 
+                NULL, 
+                &render_image_id
+            );
+            if(acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
+                MSG_LOG(msg_callback, &CONST_STRING("resizing window on acquire"));
+                vkDeviceWaitIdle(vulkan_device->device);
+                if(!createSwapchain(vulkan_objects, vulkan_device, msg_callback, vulkan_screen)) {
+                    MSG_ERROR(msg_callback, &TRACED_STR("failed to recreate swapchain"));
+                    goto _render_loop_fail;
+                }
+                continue;
+            }
+            if(acquire_result != VK_SUCCESS && acquire_result != VK_SUBOPTIMAL_KHR) {
+                MSG_ERROR(msg_callback, &TRACED_STR("failed to acquire swapchain image"));
+                goto _render_loop_fail;
+            }
+        }
+
+        vkResetFences(vulkan_device->device, 1, &render_objects.frame_fence);
+
+        /* BEGIN COMMAND BUFFER */ {
+            const VkCommandBufferBeginInfo command_buffer_begin_info = {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
+            };
+            vkResetCommandBuffer(render_objects.command_buffer, 0);
+            if(vkBeginCommandBuffer(render_objects.command_buffer, &command_buffer_begin_info) != VK_SUCCESS) {
+                MSG_ERROR(msg_callback, &TRACED_STR("failed to begin render command buffer"));
+                goto _render_loop_fail;
+            }
+        }
+
+        /* TOP SWAPCHAIN TRANSITION */ {
+            const VkImageMemoryBarrier top_swapchain_barrier = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .subresourceRange = {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+                .image = vulkan_screen->swapchain_images[render_image_id]
+            };
+
+            vkCmdPipelineBarrier(
+                render_objects.command_buffer, 
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 
+                0, 0, NULL, 0, NULL, 
+                1, &top_swapchain_barrier
+            );
+        }
+
+
+        /* BOTTOM SWAPCHAIN TRANSITION */ {
+            const VkImageMemoryBarrier bottom_swapchain_barrier = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                .subresourceRange = {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+                .image = vulkan_screen->swapchain_images[render_image_id]
+            };
+
+            vkCmdPipelineBarrier(
+                render_objects.command_buffer, 
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 
+                VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 
+                0, 0, NULL, 0, NULL, 
+                1, &bottom_swapchain_barrier
+            );
+        }
         
+        /* END COMMAND BUFFER */ {
+            if(vkEndCommandBuffer(render_objects.command_buffer) != VK_SUCCESS) {
+                MSG_ERROR(msg_callback, &TRACED_STR("failed to end render command buffer"));
+                goto _render_loop_fail;
+            }
+        }
+
+        /* SUBMIT */ {
+            const VkSubmitInfo submit_info = {
+                .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                .commandBufferCount = 1,
+                .pCommandBuffers = &render_objects.command_buffer,
+                .waitSemaphoreCount = 1,
+                .pWaitSemaphores = &render_objects.image_available_semaphore,
+                .signalSemaphoreCount = 1,
+                .pSignalSemaphores = &render_objects.image_submit_semaphores[render_image_id],
+                .pWaitDstStageMask = (const VkPipelineStageFlags []){VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT}
+            };
+
+            if(vkQueueSubmit(vulkan_device->render_queue, 1, &submit_info, render_objects.frame_fence) != VK_SUCCESS) {
+                MSG_ERROR(msg_callback, &TRACED_STR("failed to submit render queue"));
+                goto _render_loop_fail;
+            }
+        }
+
+        /* PRESENT */ {
+            const VkPresentInfoKHR present_info = {
+                .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                .swapchainCount = 1,
+                .pSwapchains = &vulkan_screen->swapchain,
+                .pImageIndices = &render_image_id,
+                .waitSemaphoreCount = 1,
+                .pWaitSemaphores = &render_objects.image_submit_semaphores[render_image_id]
+            };
+
+            VkResult present_result = vkQueuePresentKHR(vulkan_device->render_queue, &present_info);
+            if(present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR) {
+                MSG_LOG(msg_callback, &CONST_STRING("resizing window on present"));
+                vkDeviceWaitIdle(vulkan_device->device);
+                if(!createSwapchain(vulkan_objects, vulkan_device, msg_callback, vulkan_screen)) {
+                    MSG_ERROR(msg_callback, &TRACED_STR("failed to recreate swapchain"));
+                    goto _render_loop_fail;
+                }
+            } 
+            else if(present_result != VK_SUCCESS) {
+                MSG_ERROR(msg_callback, &TRACED_STR("failed to present render image"));
+                goto _render_loop_fail;
+            }
+        }
+    }
+
+    MSG_LOG(msg_callback, &CONST_STRING("exiting vulkan render loop"));
+
+    /* stop device and wait till it finishes */
+    vkDeviceWaitIdle(vulkan_device->device);
+
+    if(!detsroyRenderObjects(
+        vulkan_device,
+        vulkan_screen->swapchain_image_count,
+        msg_callback,
+        &render_objects
+    )) {
+        MSG_WARNING(msg_callback, &TRACED_STR("failed to destroy render objects"));
     }
 
     return TRUE;
+
+    _render_loop_fail: {
+        /* stop device and wait till it finishes */
+        vkDeviceWaitIdle(vulkan_device->device);
+
+        if(!detsroyRenderObjects(
+            vulkan_device,
+            vulkan_screen->swapchain_image_count,
+            msg_callback,
+            &render_objects
+        )) {
+            MSG_WARNING(msg_callback, &TRACED_STR("failed to destroy render objects"));
+        } 
+    }
+    _render_objects_create_fail: {
+        return FALSE;
+    }
 }

@@ -90,14 +90,25 @@ typedef struct {
     u32 compute_shader_count;
 } CreateVulkanDynamicIn;
 
+typedef struct VulkanRenderCmd VulkanRenderCmd;
+typedef b32 (*VulkanLoop_pfn) (VulkanRenderCmd *cmd);
+
 b32 createVulkanDynamic(VulkanHandle vulkan, const CreateVulkanDynamicIn *input);
 b32 destroyVulkanDynamic(VulkanHandle vulkan);
-b32 runVulkanLoop(VulkanHandle vulkan);
+b32 runVulkanLoop(VulkanHandle vulkan, VulkanLoop_pfn loop_callback, MsgCallback_pfn msg_callback);
 
 #define REQUIRED_DEVICE_VRAM_SIZE (1024llu * 1024llu * 1024llu * 2llu)
 #define REQUIRED_HOST_VRAM_SIZE (1024llu * 1024llu * 1024llu * 4llu)
 #define MAX_PHYSICAL_DEVICE_COUNT (4)
 
+/* CMD */
+
+#define IMAGE_SCREEN_COLOR_ID (0xfffffffe)
+#define IMAGE_SCREEN_DEPTH_ID (0xfffffffd)
+#define MAX_COLOR_TARGET_COUNT (8)
+
+void cmdBeginRendering(VulkanRenderCmd *render_cmd, u32 color_target_count, const u32 *color_target_ids, u32 depth_target_id);
+void cmdEndRendering(VulkanRenderCmd *render_cmd);
 
 #ifdef INCLUDE_VULKAN_INTERNAL
     
@@ -130,6 +141,10 @@ b32 runVulkanLoop(VulkanHandle vulkan);
         VkQueue render_queue;
         VkQueue transfer_queue;
         VkQueue compute_queue;
+                
+        VkCommandPool render_command_pool;
+        VkCommandPool transfer_command_pool;
+        VkCommandPool compute_command_pool;
 
         u32 render_queue_id;
         u32 transfer_queue_id;
@@ -155,7 +170,6 @@ b32 runVulkanLoop(VulkanHandle vulkan);
     typedef enum {
         DESCRIPTOR_SET_GENERAL_ID   = 0,
         DESCRIPTOR_SET_BUFFERS_ID   = 1,
-        DESCRIPTOR_SET_TEXTURES_ID  = 2,
         DESCRIPTOR_SET_COUNT
     } DescriptorSetIds;
     
@@ -215,6 +229,7 @@ b32 runVulkanLoop(VulkanHandle vulkan);
 
         void *vulkan_memory;
         void *vulkan_screen;
+        void *vulkan_descriptors;
         void *vulkan_pipelines;
 
         void *resource_address;
@@ -241,13 +256,26 @@ b32 runVulkanLoop(VulkanHandle vulkan);
     #define MAX_PIPELINE_COUNT (1024)
     #define MAX_PIPELINE_DEPENDENCY_COUNT (2048)
     #define MAX_PIPELINES_SIZE (MAX_PIPELINE_COUNT * sizeof(VkPipeline))
+    
+    #define MAX_STORAGE_BUFFER_COUNT (16)
+    #define MAX_STORAGE_BUFFER_SIZE (MAX_STORAGE_BUFFER_COUNT * sizeof(VkBuffer) * 2)
 
     /*  Segment layout representation:
     +----------------+---------------+---------------+---------------+--------------------+----------------+-------------------------------------------------------+
     | VULKAN OBJECTS | VULKAN DEVICE | VULKAN MEMORY | VULKAN SCREEN | VULKAN DESCRIPTORS | VULKAN SHADERS |                                                       |                                                       |
     +----------------+---------------+---------------+---------------+--------------------+----------------+-------------------------------------------------------+
                                                                                                 resource address                                                    */
+    struct VulkanRenderCmd {
+        VkCommandBuffer command_buffer;
+        VkImage screen_color_image;
+        VkImage screen_depth_image;
+        VkImageView screen_color_image_view;
+        VkImageView screen_depth_image_view;
 
+        VkRect2D screen_render_area;
+        PFN_vkCmdBeginRendering begin_rendering;
+        PFN_vkCmdEndRendering end_rendering;
+    };
 
 #endif /* #ifdef INCLUDE_VULKAN_INTERNAL */
 

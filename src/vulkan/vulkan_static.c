@@ -36,7 +36,8 @@ layoutSegment(
         .vulkan_device      = (byte *)segment->begin + sizeof(VulkanSegment) + sizeof(VulkanObjects),
         .vulkan_memory      = (byte *)segment->begin + sizeof(VulkanSegment) + sizeof(VulkanObjects) + sizeof(VulkanDevice),
         .vulkan_screen      = (byte *)segment->begin + sizeof(VulkanSegment) + sizeof(VulkanObjects) + sizeof(VulkanDevice) + sizeof(VulkanMemory),
-        .vulkan_pipelines     = (byte *)segment->begin + sizeof(VulkanSegment) + sizeof(VulkanObjects) + sizeof(VulkanDevice) + sizeof(VulkanMemory) + sizeof(VulkanScreen),
+        .vulkan_descriptors = (byte *)segment->begin + sizeof(VulkanSegment) + sizeof(VulkanObjects) + sizeof(VulkanDevice) + sizeof(VulkanMemory) + sizeof(VulkanScreen),
+        .vulkan_pipelines   = (byte *)segment->begin + sizeof(VulkanSegment) + sizeof(VulkanObjects) + sizeof(VulkanDevice) + sizeof(VulkanMemory) + sizeof(VulkanScreen) + sizeof(VulkanDescriptors),
 
         .resource_address   = (byte *)segment->begin + VULKAN_STRUCTS_SIZE,
         .resource_shaders   = (byte *)segment->begin + VULKAN_STRUCTS_SIZE,
@@ -1127,13 +1128,41 @@ createVulkanDevice(
                 .compute_queue_id = devices[i].compute_queue_id
             };
 
-            /* get device queues */
-            vkGetDeviceQueue(created_device, devices[i].render_queue_id, 0, &device->render_queue);
+            /* render queue */ {
+                vkGetDeviceQueue(created_device, devices[i].render_queue_id, 0, &device->render_queue);
+                /* create command pool */
+                const VkCommandPoolCreateInfo render_command_pool_info = {
+                    .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                    .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                    .queueFamilyIndex = devices[i].render_queue_id
+                };
+                if(vkCreateCommandPool(created_device, &render_command_pool_info, NULL, &device->render_command_pool) != VK_SUCCESS) {
+                    goto _render_command_pool_fail;
+                }
+            }
             if(devices[i].transfer_queue_id != U32_MAX) {
                 vkGetDeviceQueue(created_device, devices[i].transfer_queue_id, 0, &device->transfer_queue);
+                /* create command pool */
+                const VkCommandPoolCreateInfo trasnfer_command_pool_info = {
+                    .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                    .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                    .queueFamilyIndex = devices[i].transfer_queue_id
+                };
+                if(vkCreateCommandPool(created_device, &trasnfer_command_pool_info, NULL, &device->transfer_command_pool) != VK_SUCCESS) {
+                    goto _transfer_command_pool_fail;
+                }
             }
             if(devices[i].compute_queue_id != U32_MAX) {
                 vkGetDeviceQueue(created_device, devices[i].compute_queue_id, 0, &device->compute_queue);
+                /* create command pool */
+                const VkCommandPoolCreateInfo compute_command_pool_info = {
+                    .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                    .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                    .queueFamilyIndex = devices[i].compute_queue_id
+                };
+                if(vkCreateCommandPool(created_device, &compute_command_pool_info, NULL, &device->compute_command_pool) != VK_SUCCESS) {
+                    goto _compute_command_pool_fail;
+                }
             }
 
             /* cppy device formats */
@@ -1164,7 +1193,15 @@ createVulkanDevice(
             
             goto _success;
 
+            vkDestroyCommandPool(device->device, device->render_command_pool, NULL);
             /* failed to create device */
+            _compute_command_pool_fail: {
+                vkDestroyCommandPool(device->device, device->transfer_command_pool, NULL);
+            }
+            _transfer_command_pool_fail: {
+                vkDestroyCommandPool(device->device, device->render_command_pool, NULL);
+            }
+            _render_command_pool_fail: {};
             _load_device_extensions_fail: {
                 vkDestroyDevice(created_device, NULL);
             }
@@ -1194,6 +1231,29 @@ destroyVulkanDevice(
     MsgCallback_pfn msg_callback
 ) {
     b32 result = TRUE;
+
+    /* COMMAND POOLS */ {
+        if(device->render_command_pool) {
+            vkDestroyCommandPool(device->device, device->render_command_pool, NULL);
+        } else {
+            MSG_WARNING(msg_callback, &TRACED_STR("trying to destroy render command pool, but it is null"));
+            result = FALSE;
+        }
+        if(device->transfer_queue_id != U32_MAX) {
+            if(device->transfer_command_pool) {
+                vkDestroyCommandPool(device->device, device->transfer_command_pool, NULL);
+            } else {
+                MSG_WARNING(msg_callback, &TRACED_STR("trying to destroy transfer command pool, but it is null"));
+            }
+        }
+        if(device->compute_queue_id != U32_MAX) {
+            if(device->compute_command_pool) {
+                vkDestroyCommandPool(device->device, device->compute_command_pool, NULL);
+            } else {
+                MSG_WARNING(msg_callback, &TRACED_STR("trying to destroy compute command pool, but it is null"));
+            }
+        }
+    }
 
     if(device->device) {
         vkDestroyDevice(device->device, NULL);

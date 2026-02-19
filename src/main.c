@@ -45,6 +45,20 @@ readShaderFile(
     return file_size;
 }
 
+b32
+renderLoop(
+    VulkanRenderCmd *cmd
+) {
+    /* SCREEN RENDER */ {
+        const u32 color_attachments[] = {IMAGE_SCREEN_COLOR_ID};
+        const u32 depth_attachment = IMAGE_SCREEN_DEPTH_ID;
+
+        cmdBeginRendering(cmd, ARRAY_SIZE(color_attachments), color_attachments, depth_attachment);
+        cmdEndRendering(cmd);
+    }
+    return TRUE;
+}
+
 i32 
 main(
     i32 argc, 
@@ -104,7 +118,7 @@ main(
         return -1;
     }
 
-    if(!runVulkanLoop(vulkan)) {
+    if(!runVulkanLoop(vulkan, renderLoop, msgCallback)) {
         MSG_ERROR(msgCallback, &TRACED_STR("failed to run vulkan loop"));
         return -1;
     }
