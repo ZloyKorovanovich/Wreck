@@ -49,13 +49,7 @@ b32
 renderLoop(
     VulkanRenderCmd *cmd
 ) {
-    /* SCREEN RENDER */ {
-        const u32 color_attachments[] = {IMAGE_SCREEN_COLOR_ID};
-        const u32 depth_attachment = IMAGE_SCREEN_DEPTH_ID;
 
-        cmdBeginRendering(cmd, ARRAY_SIZE(color_attachments), color_attachments, depth_attachment);
-        cmdEndRendering(cmd);
-    }
     return TRUE;
 }
 
@@ -72,15 +66,6 @@ main(
 
     Segment segment = {virtual_allocation, (byte *)virtual_allocation + 1024 * 64};
 
-    CreateVulkanIn create_vulkan_in = {
-        .msg_callback = msgCallback,
-        .segment = &segment,
-        .name = "Wreck 3D",
-        .flags = VULKAN_IN_FLAG_DEBUG | VULKAN_IN_FLAG_RESIZE,
-        .x = 800,
-        .y = 600
-    };
-
     Buffer vertex_shader = (Buffer){.buffer = (char[1024 * 4]){0}, .size = 1024 * 4};
     Buffer fragment_shader = (Buffer){.buffer = (char[1024 * 4]){0}, .size = 1024 * 4};
     u64 vertex_size = 0;
@@ -93,6 +78,15 @@ main(
             return -1;
         }
     }
+
+    CreateVulkanIn create_vulkan_in = {
+        .msg_callback = msgCallback,
+        .segment = &segment,
+        .name = "Wreck 3D",
+        .flags = VULKAN_IN_FLAG_DEBUG | VULKAN_IN_FLAG_RESIZE,
+        .x = 800,
+        .y = 600
+    };
     CreateVulkanOut create_vulkan_out = (CreateVulkanOut){0};
     CreateVulkanDynamicIn create_vulkan_dynamic_in = {
         .graphics_shaders = (VulkanGraphicsPipelineInfo[]) {
@@ -106,8 +100,21 @@ main(
         },
         .graphics_shader_count = 1
     };
+    CreateVulkanBuffersIn create_vulkan_buffers_in = (CreateVulkanBuffersIn){
+        .uniform_buffer_info = (VulkanBufferInfo[1]){(VulkanBufferInfo){.size = 1024}},
+        .storage_buffer_count = 4,
+        .storage_buffer_infos = (VulkanBufferInfo[]){
+            (VulkanBufferInfo) {.size = 512},
+            (VulkanBufferInfo) {.size = 256},
+            (VulkanBufferInfo) {.size = 122},
+            (VulkanBufferInfo) {.size = 144}
+        }
+    };
+    CreateVulkanBuffersOut create_vulkan_buffers_out = (CreateVulkanBuffersOut){
+        .storage_buffer_addresses = (void* [4]){0}
+    };
 
-    VulkanHandle vulkan = createVulkan(&create_vulkan_in, &create_vulkan_out);
+    VulkanSegment *vulkan = createVulkan(&create_vulkan_in, &create_vulkan_out);
     if(!vulkan) {
         MSG_ERROR(msgCallback, &TRACED_STR("failed to create vulkan"));
         return -1;
@@ -115,6 +122,11 @@ main(
 
     if(!createVulkanDynamic(vulkan, &create_vulkan_dynamic_in)) {
         MSG_ERROR(msgCallback, &TRACED_STR("failed to create dynamic vulkan"));
+        return -1;
+    }
+
+    if(!createVulkanBuffers(vulkan, &create_vulkan_buffers_in, &create_vulkan_buffers_out)) {
+        MSG_ERROR(msgCallback, &TRACED_STR("failed to create vulkan buffers"));
         return -1;
     }
 

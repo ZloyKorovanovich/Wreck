@@ -45,6 +45,22 @@
         VULKAN MEMORY
     =============================================================== */
 
+static inline void
+adjustVramRequest(
+    const VkMemoryRequirements *memory_requirements,
+    VramAllocationRequest *request,
+    VramRegion *region
+) {
+    u64 region_offset = ALIGN(request->size, memory_requirements->alignment);
+
+    *region = (VramRegion) {
+        .offset = region_offset,
+        .size = request->size
+    };
+    request->size = region_offset + memory_requirements->size;
+    request->memory_bits &= memory_requirements->memoryTypeBits;
+}
+
 b32 
 createVulkanMemory(
     const VulkanDevice *vulkan_device,
@@ -167,6 +183,8 @@ createSwapchain(
     MsgCallback_pfn msg_callback,
     VulkanScreen *vulkan_screen
 ) {
+    String log_str = STACK_STR(256);
+
     u32 min_image_count = U32_MAX;
     VkExtent2D surface_extent = (VkExtent2D){0};
     VkSurfaceTransformFlagsKHR surface_transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
@@ -287,6 +305,16 @@ createSwapchain(
     
     vulkan_screen->screen_size_x = surface_extent.width;
     vulkan_screen->screen_size_y = surface_extent.height;
+
+    /* LOG */ {
+        stringPattern(
+            &CONST_STRING("created vulkan swapchain x: %u32 :y %u32"), 
+            (const void *[]){&vulkan_screen->screen_size_x, &vulkan_screen->screen_size_y},
+            &log_str
+        );
+        MSG_LOG(msg_callback, &log_str);
+    }
+
     /* success */
     return TRUE;
     
@@ -324,6 +352,7 @@ createVulkanScreen(
     
     u32 max_res_x = 0; 
     u32 max_res_y = 0;
+    u64 screen_image_alloc_size = 0;
 
     /* CALCULATE IMAGE SIZE */ {
         /* We allocate for the worst case, when the whole screen will be window.
@@ -415,7 +444,7 @@ createVulkanScreen(
 
             VramAllocationRequest alloc_request = {
                 .size = ALIGN(screen_color_requirements.size, screen_depth_requirements.alignment) + screen_depth_requirements.size,
-                .memoryBits = screen_color_requirements.memoryTypeBits & screen_depth_requirements.memoryTypeBits
+                .memory_bits = screen_color_requirements.memoryTypeBits & screen_depth_requirements.memoryTypeBits
             };
             if(vulkan_device->memory_model == VULKAN_MEMORY_MODEL_HOST_DEVICE) {
                 alloc_request.mandatory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
@@ -428,6 +457,7 @@ createVulkanScreen(
                 alloc_request.mandatory_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
             }
 
+            screen_image_alloc_size = alloc_request.size;
             if(!allocateVram(vulkan_memory, &alloc_request, &screen_textures->vram_allocation)) {
                 MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate screen images vram"));
                 goto _allocation_fail;
@@ -489,6 +519,25 @@ createVulkanScreen(
     if(!createSwapchain(vulkan_objects, vulkan_device, msg_callback, screen_textures)) {
         MSG_ERROR(msg_callback, &TRACED_STR("failed to cretae swapchain"));
         goto _swapchain_fail;
+    }
+
+    /* LOG */ {
+        stringPattern(
+            &CONST_STRING(
+                "created screen textures {\n"
+                "\tresolution x: %u32\n"
+                "\tresolution y: %u32\n"
+                "\tvram size: %u64\n"
+                "}"
+            ),
+            (const void *[]) {
+                &max_res_x,
+                &max_res_y,
+                &screen_image_alloc_size
+            },
+            &log_str
+        );
+        MSG_LOG(msg_callback, &log_str);
     }
 
     return TRUE;
@@ -976,22 +1025,30 @@ createPipelines(
     const VulkanComputePipelineInfo *compute_pipeline_infos,
     MsgCallback_pfn msg_callback,
     VulkanPipelines *vulkan_pipelines,
-    void *resource_shaders
+    void *resource_base,
+    void *resource_limit
 ) {
     *vulkan_pipelines = (VulkanPipelines) {0};
     String log_str = STACK_STR(512);
     const char *empty_name = " ";
+
+    /* check if there is enugh space allocated for shaders */
+    u64 pipeline_allocation_size = sizeof(VkPipeline) * (graphics_pipeline_count + compute_pipeline_count);
+    if(pipeline_allocation_size > (u64)resource_limit - (u64)resource_base) {
+        MSG_ERROR(msg_callback, &TRACED_STR("not enough space for vulkan pipelines arrays"));
+        goto _prealloc_fail;
+    }
 
     if(graphics_pipeline_count == 0 && compute_pipeline_count == 0) { 
         MSG_LOG(msg_callback, &CONST_STRING("no vulkan pipelines created"));
         goto _success;
     }
     if(graphics_pipeline_count != 0) {
-        vulkan_pipelines->graphics_pipelines = (VkPipeline *)resource_shaders;
+        vulkan_pipelines->graphics_pipelines = (VkPipeline *)resource_base;
         vulkan_pipelines->graphics_pipeline_count = graphics_pipeline_count;
     }
     if(compute_pipeline_count != 0) {
-        vulkan_pipelines->compute_pipelines = (VkPipeline *)resource_shaders + graphics_pipeline_count;
+        vulkan_pipelines->compute_pipelines = (VkPipeline *)resource_base + graphics_pipeline_count;
         vulkan_pipelines->compute_pipeline_count = compute_pipeline_count;
     }
 
@@ -1318,6 +1375,224 @@ destroyPipelines(
 }
 
 /*  ===============================================================
+        VULKAN BUFFERS
+    =============================================================== */
+
+static b32
+createBuffers_HostDeviceMemoryModel(
+    VkDevice device,
+    VulkanMemory *vulkan_memory,
+    u32 storage_buffer_count,
+    const VulkanBufferInfo *uniform_buffer_info,
+    const VulkanBufferInfo *storage_buffer_infos,
+    void *resources_base,
+    void *resources_limit,
+    MsgCallback_pfn msg_callback,
+    VulkanBuffers *vulkan_buffers
+) {
+    String log_str = STACK_STR(256);
+    
+    u64 resource_alloc_size = (sizeof(VramRegion) * 2 + sizeof(VkBuffer)) * storage_buffer_count;
+    if(resource_alloc_size > (u64)resources_limit - (u64)resources_base) {
+        MSG_ERROR(msg_callback, &TRACED_STR("not enough space for vulkan buffers on resource address space"));
+        goto _validation_fail;
+    }
+
+    *vulkan_buffers = (VulkanBuffers){
+        .storage_buffer_count = storage_buffer_count,
+        .storage_buffers = (VkBuffer *)resources_base,
+        .storage_dst_regions = (VramRegion *)(
+            (u8 *)resources_base + 
+            sizeof(VkBuffer) * storage_buffer_count
+        ),
+        .storage_src_regions = (VramRegion *)(
+            (u8 *)resources_base + 
+            sizeof(VkBuffer) * storage_buffer_count +
+            sizeof(VramRegion) * storage_buffer_count
+        )
+    };
+
+    VkBuffer *storage_buffers = vulkan_buffers->storage_buffers;
+    VramRegion *src_storage_regions = vulkan_buffers->storage_src_regions;
+    VramRegion *dst_storage_regions = vulkan_buffers->storage_dst_regions;
+
+    /* up-to-date number of buffers created, to destroy them in case of fail */
+    u32 storage_buffer_created = 0;
+
+    VramAllocationRequest src_alloc_request = {
+        .memory_bits = U32_MAX,
+        .mandatory_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+        .negative_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+    };
+    VramAllocationRequest dst_alloc_request = {
+        .memory_bits = U32_MAX,
+        .mandatory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        .restricted_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+    };
+
+    /* UNIFORM AND STORAGE DST BUFFERS */ {
+        if(uniform_buffer_info) {
+            /* create uniform buffer */
+            const VkBufferCreateInfo buffer_info = {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                .size = uniform_buffer_info->size
+            };
+            if(vkCreateBuffer(device, &buffer_info, NULL, &vulkan_buffers->uniform_buffer) != VK_SUCCESS) {
+                MSG_ERROR(msg_callback, &TRACED_STR("failed to create vulkan uniform buffer"));
+                goto _uniform_buffer_fail;
+            }
+
+            /* get requirements, to adjust allocation data */
+            VkMemoryRequirements buffer_memory_requirements = (VkMemoryRequirements){0};
+            vkGetBufferMemoryRequirements(device, vulkan_buffers->uniform_buffer, &buffer_memory_requirements);
+            
+            /* adjust vram allocations */
+            adjustVramRequest(&buffer_memory_requirements, &src_alloc_request, &vulkan_buffers->uniform_src_region);
+            adjustVramRequest(&buffer_memory_requirements, &dst_alloc_request, &vulkan_buffers->uniform_dst_region);
+
+            MSG_LOG(msg_callback, &CONST_STRING("created vulkan uniform buffer"));
+        }
+        for(u32 i = 0; i < storage_buffer_count; i++) {
+            /* create storage buffer */
+            const VkBufferCreateInfo buffer_info = {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                .size = storage_buffer_infos[i].size
+            };
+            if(vkCreateBuffer(device, &buffer_info, NULL, &storage_buffers[i]) != VK_SUCCESS) {
+                stringPattern(
+                    &TRACED_STR("failed to create vulkan storage buffer id: %u32"),
+                    (const void *[]){&i},
+                    &log_str
+                );
+                MSG_ERROR(msg_callback, &log_str);
+                goto _storage_buffer_fail;
+            }
+
+            /* get requirements, to adjust allocation data */
+            VkMemoryRequirements buffer_memory_requirements = (VkMemoryRequirements){0};
+            vkGetBufferMemoryRequirements(device, storage_buffers[i], &buffer_memory_requirements);
+            
+            /* adjust vram allocations */
+            adjustVramRequest(&buffer_memory_requirements, &src_alloc_request, &src_storage_regions[i]);
+            adjustVramRequest(&buffer_memory_requirements, &dst_alloc_request, &dst_storage_regions[i]);    
+
+            /* LOG */ {
+                stringPattern(
+                    &CONST_STRING("created vulkan storage buffer id: %u32"),
+                    (const void *[]) {&i},
+                    &log_str
+                );
+                MSG_LOG(msg_callback, &log_str);
+            }
+
+            /* adjust up-to-date counter */
+            storage_buffer_created++;
+        }
+    }
+    
+    /* SRC BUFFER AND ALLOCATE VRAM */ {
+        const VkBufferCreateInfo src_buffer_info = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            .size = src_alloc_request.size
+        };
+        if(vkCreateBuffer(device, &src_buffer_info, NULL, &vulkan_buffers->src_buffer) != VK_SUCCESS) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to create vulkan buffers src buffer"));
+            goto _src_buffer_fail;
+        }
+        /* get its requirements */
+        VkMemoryRequirements src_buffer_requirements = (VkMemoryRequirements){0};
+        vkGetBufferMemoryRequirements(device, vulkan_buffers->src_buffer, &src_buffer_requirements);
+        /* now correct info about allocation */
+        src_alloc_request.size = src_buffer_requirements.size;
+        src_alloc_request.memory_bits = src_buffer_requirements.memoryTypeBits;
+
+        if(!allocateVram(vulkan_memory, &dst_alloc_request, &vulkan_buffers->dst_vram)) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate vulkan buffers dst vram"));
+            goto _dst_vram_fail;
+        }
+        if(!allocateVram(vulkan_memory, &src_alloc_request, &vulkan_buffers->src_vram)) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate vulkan buffers src vram"));
+            goto _src_vram_fail;
+        }
+    }
+
+    /* BIND BUFFERS VRAM */ {
+        /* bind uniform buffer */
+        if(uniform_buffer_info) {
+            if(vkBindBufferMemory(
+                device, 
+                vulkan_buffers->uniform_buffer, 
+                vulkan_buffers->dst_vram.memory, 
+                vulkan_buffers->uniform_dst_region.offset
+            ) != VK_SUCCESS) {
+                MSG_ERROR(msg_callback, &TRACED_STR("failed to bind vulkan uniform buffer memory"));
+                goto _buffer_bind_fail;
+            }
+        }
+        /* bind storage buffers */
+        for(u32 i = 0; i < storage_buffer_created; i++) {
+            if(vkBindBufferMemory(
+                device, 
+                storage_buffers[i], 
+                vulkan_buffers->dst_vram.memory,
+                dst_storage_regions->offset
+            ) != VK_SUCCESS) {
+                stringPattern(
+                    &TRACED_STR("failed to bind storage buffer memory id: %u32"),
+                    (const void *[]){&i},
+                    &log_str
+                );
+                MSG_ERROR(msg_callback, &log_str);
+                goto _buffer_bind_fail;
+            }
+        }
+        /* bind src buffer */
+        if(vkBindBufferMemory(
+            device, 
+            vulkan_buffers->src_buffer,
+            vulkan_buffers->src_vram.memory,
+            0
+        ) != VK_SUCCESS) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to bind vulkan buffers src buffer memory"));
+            goto _buffer_bind_fail;
+        }
+    }
+
+    return TRUE;
+
+    _buffer_bind_fail: {
+        freeVram(vulkan_memory, &vulkan_buffers->src_vram);
+    }
+    _src_vram_fail: {
+        freeVram(vulkan_memory, &vulkan_buffers->dst_vram);
+    }
+    _dst_vram_fail: {
+        vkDestroyBuffer(device, vulkan_buffers->src_buffer, NULL);
+    }
+    _src_buffer_fail: {};
+    _storage_buffer_fail: {
+        for(u32 i = 0; i < storage_buffer_created; i++) {
+            vkDestroyBuffer(device, storage_buffers[i], NULL);
+        }
+        vkDestroyBuffer(device, vulkan_buffers->uniform_buffer, NULL);
+    }
+    _uniform_buffer_fail: {};
+    _validation_fail: {
+        return FALSE;
+    }
+}
+
+static b32
+destroyBuffers(
+    
+) {
+    
+}
+
+/*  ===============================================================
         RENDER OBJECTS
     =============================================================== */
 
@@ -1397,7 +1672,7 @@ createRenderObjects(
 }
 
 static b32
-detsroyRenderObjects(
+destroyRenderObjects(
     const VulkanDevice *vulkan_device,
     u32 swapchain_image_count,
     MsgCallback_pfn msg_callback,
@@ -1442,22 +1717,181 @@ detsroyRenderObjects(
     return result;
 }
 
+static b32
+renderIteration(
+    const VulkanObjects *vulkan_objects,
+    const VulkanDevice *vulkan_device,
+    const RenderObjects *render_objects,
+    MsgCallback_pfn msg_callback,
+    VulkanLoop_pfn loop_callback,
+    VulkanScreen *vulkan_screen
+) {
+    u32 render_image_id = U32_MAX;
+    vkWaitForFences(vulkan_device->device, 1, &render_objects->frame_fence, VK_TRUE, U64_MAX);
+
+    /* ACQUIRE */ {
+        VkResult acquire_result = vkAcquireNextImageKHR(
+            vulkan_device->device, 
+            vulkan_screen->swapchain, 
+            U64_MAX, 
+            render_objects->image_available_semaphore, 
+            NULL, 
+            &render_image_id
+        );
+        if(acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
+            MSG_LOG(msg_callback, &CONST_STRING("resizing window on acquire"));
+            vkDeviceWaitIdle(vulkan_device->device);
+            if(!createSwapchain(vulkan_objects, vulkan_device, msg_callback, vulkan_screen)) {
+                MSG_ERROR(msg_callback, &TRACED_STR("failed to recreate swapchain"));
+                goto _fail;
+            }
+            goto _success;
+        }
+        if(acquire_result != VK_SUCCESS && acquire_result != VK_SUBOPTIMAL_KHR) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to acquire swapchain image"));
+            goto _fail;
+        }
+    }
+
+    vkResetFences(vulkan_device->device, 1, &render_objects->frame_fence);
+
+    /* BEGIN COMMAND BUFFER */ {
+        const VkCommandBufferBeginInfo command_buffer_begin_info = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
+        };
+        vkResetCommandBuffer(render_objects->command_buffer, 0);
+        if(vkBeginCommandBuffer(render_objects->command_buffer, &command_buffer_begin_info) != VK_SUCCESS) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to begin render command buffer"));
+            goto _fail;
+        }
+    }
+
+    /* TOP SWAPCHAIN TRANSITION */ {
+        const VkImageMemoryBarrier top_swapchain_barrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+            .image = vulkan_screen->swapchain_images[render_image_id]
+        };
+
+        vkCmdPipelineBarrier(
+            render_objects->command_buffer, 
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 
+            0, 0, NULL, 0, NULL, 
+            1, &top_swapchain_barrier
+        );
+    }
+
+
+    /* BOTTOM SWAPCHAIN TRANSITION */ {
+        const VkImageMemoryBarrier bottom_swapchain_barrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+            .image = vulkan_screen->swapchain_images[render_image_id]
+        };
+
+        vkCmdPipelineBarrier(
+            render_objects->command_buffer, 
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 
+            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 
+            0, 0, NULL, 0, NULL, 
+            1, &bottom_swapchain_barrier
+        );
+    }
+    
+    /* END COMMAND BUFFER */ {
+        if(vkEndCommandBuffer(render_objects->command_buffer) != VK_SUCCESS) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to end render command buffer"));
+            goto _fail;
+        }
+    }
+
+    /* SUBMIT */ {
+        const VkSubmitInfo submit_info = {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &render_objects->command_buffer,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &render_objects->image_available_semaphore,
+            .signalSemaphoreCount = 1,
+            .pSignalSemaphores = &render_objects->image_submit_semaphores[render_image_id],
+            .pWaitDstStageMask = (const VkPipelineStageFlags []){VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT}
+        };
+
+        if(vkQueueSubmit(vulkan_device->render_queue, 1, &submit_info, render_objects->frame_fence) != VK_SUCCESS) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to submit render queue"));
+            goto _fail;
+        }
+    }
+
+    /* PRESENT */ {
+        const VkPresentInfoKHR present_info = {
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .swapchainCount = 1,
+            .pSwapchains = &vulkan_screen->swapchain,
+            .pImageIndices = &render_image_id,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &render_objects->image_submit_semaphores[render_image_id]
+        };
+
+        VkResult present_result = vkQueuePresentKHR(vulkan_device->render_queue, &present_info);
+        if(present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR) {
+            MSG_LOG(msg_callback, &CONST_STRING("resizing window on present"));
+            vkDeviceWaitIdle(vulkan_device->device);
+            if(!createSwapchain(vulkan_objects, vulkan_device, msg_callback, vulkan_screen)) {
+                MSG_ERROR(msg_callback, &TRACED_STR("failed to recreate swapchain"));
+                goto _fail;
+            }
+        } 
+        else if(present_result != VK_SUCCESS) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to present render image"));
+            goto _fail;
+        }
+    }
+
+    _success: {
+        return TRUE;
+    }
+
+    _fail: {
+        return FALSE;
+    }
+}
+
 /*  ===============================================================
         EXTERN INTERFACE
     =============================================================== */
 
 b32 createVulkanDynamic(
-    VulkanHandle vulkan, 
+    VulkanSegment *vulkan, 
     const CreateVulkanDynamicIn *input
 ) {
-    const VulkanSegment *vulkan_segment = (VulkanSegment *)vulkan;
-    const VulkanObjects *vulkan_objects = (VulkanObjects *)vulkan_segment->vulkan_objects;
-    const VulkanDevice *vulkan_device = (VulkanDevice *)vulkan_segment->vulkan_device;
+    VulkanSegment *vulkan_segment = vulkan;
+    VulkanObjects *vulkan_objects = &vulkan_segment->vulkan_objects;
+    VulkanDevice *vulkan_device = &vulkan_segment->vulkan_device;
     MsgCallback_pfn msg_callback = vulkan_objects->msg_callback;
 
-    VulkanMemory *vulkan_memory = (VulkanMemory *)vulkan_segment->vulkan_memory;
-    VulkanScreen *vulkan_screen = (VulkanScreen *)vulkan_segment->vulkan_screen;
-    VulkanDescriptors *vulkan_descriptors = (VulkanDescriptors *)vulkan_segment->vulkan_descriptors;
+    VulkanMemory *vulkan_memory = &vulkan_segment->vulkan_memory;
+    VulkanScreen *vulkan_screen = &vulkan_segment->vulkan_screen;
+    VulkanDescriptors *vulkan_descriptors = &vulkan_segment->vulkan_descriptors;
 
     if(!createVulkanMemory(
         vulkan_device,
@@ -1495,8 +1929,9 @@ b32 createVulkanDynamic(
         input->graphics_shaders,
         input->compute_shaders,
         msg_callback,
-        vulkan_segment->vulkan_pipelines,
-        vulkan_segment->resource_shaders
+        &vulkan_segment->vulkan_pipelines,
+        vulkan_segment->resource_pipelines_base,
+        vulkan_segment->resource_pipelines_limit
     )) {
         MSG_ERROR(msg_callback, &TRACED_STR("failed to create vulkan pipelines"));
         goto _critical_fail;
@@ -1510,17 +1945,17 @@ b32 createVulkanDynamic(
 }
 
 b32 destroyVulkanDynamic(
-    VulkanHandle vulkan
+    VulkanSegment *vulkan
 ) {
-    const VulkanSegment *vulkan_segment = (VulkanSegment *)vulkan;
-    const VulkanObjects *vulkan_objects = (VulkanObjects *)vulkan_segment->vulkan_objects;
-    const VulkanDevice *vulkan_device = (VulkanDevice *)vulkan_segment->vulkan_device;
+    VulkanSegment *vulkan_segment = vulkan;
+    const VulkanObjects *vulkan_objects = &vulkan_segment->vulkan_objects;
+    const VulkanDevice *vulkan_device = &vulkan_segment->vulkan_device;
     MsgCallback_pfn msg_callback = vulkan_objects->msg_callback;
 
-    VulkanMemory *vulkan_memory = (VulkanMemory *)vulkan_segment->vulkan_memory;
-    VulkanScreen *vulkan_screen = (VulkanScreen *)vulkan_segment->vulkan_screen;
-    VulkanPipelines *vulkan_pipelines = (VulkanPipelines *)vulkan_segment->vulkan_pipelines;
-    VulkanDescriptors *vulkan_descriptors = (VulkanDescriptors *)vulkan_segment->vulkan_descriptors;
+    VulkanMemory *vulkan_memory = &vulkan_segment->vulkan_memory;
+    VulkanScreen *vulkan_screen = &vulkan_segment->vulkan_screen;
+    VulkanPipelines *vulkan_pipelines = &vulkan_segment->vulkan_pipelines;
+    VulkanDescriptors *vulkan_descriptors = &vulkan_segment->vulkan_descriptors;
     b32 result = TRUE;
 
     if(!destroyPipelines(
@@ -1565,18 +2000,18 @@ b32 destroyVulkanDynamic(
 
 b32 
 runVulkanLoop(
-    VulkanHandle vulkan, 
+    VulkanSegment *vulkan, 
     VulkanLoop_pfn loop_callback,
     MsgCallback_pfn msg_callback
 ) {
-    const VulkanSegment *vulkan_segment = (VulkanSegment *)vulkan;
-    const VulkanObjects *vulkan_objects = (VulkanObjects *)vulkan_segment->vulkan_objects;
-    const VulkanDevice *vulkan_device = (VulkanDevice *)vulkan_segment->vulkan_device;
-    VulkanScreen *vulkan_screen = (VulkanScreen *)vulkan_segment->vulkan_screen;
+    VulkanSegment *vulkan_segment = vulkan;
+    const VulkanObjects *vulkan_objects = &vulkan_segment->vulkan_objects;
+    const VulkanDevice *vulkan_device = &vulkan_segment->vulkan_device;
+    VulkanScreen *vulkan_screen = &vulkan_segment->vulkan_screen;
 
     RenderObjects render_objects = (RenderObjects){0};
     if(!createRenderObjects(
-        vulkan_device, 
+        vulkan_device,
         vulkan_screen->swapchain_image_count, 
         msg_callback, 
         &render_objects
@@ -1584,159 +2019,28 @@ runVulkanLoop(
         MSG_ERROR(msg_callback, &TRACED_STR("failed to create vulkan render objects"));
         goto _render_objects_create_fail;
     }
-
+    
+    /* RENDER LOOP */
     MSG_LOG(msg_callback, &CONST_STRING("starting vulkan render loop"));
-
     while(processWindow(vulkan_objects->window)) {
-        u32 render_image_id = U32_MAX;
-
-        vkWaitForFences(vulkan_device->device, 1, &render_objects.frame_fence, VK_TRUE, U64_MAX);
-
-        /* ACQUIRE */ {
-            VkResult acquire_result = vkAcquireNextImageKHR(
-                vulkan_device->device, 
-                vulkan_screen->swapchain, 
-                U64_MAX, 
-                render_objects.image_available_semaphore, 
-                NULL, 
-                &render_image_id
-            );
-            if(acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
-                MSG_LOG(msg_callback, &CONST_STRING("resizing window on acquire"));
-                vkDeviceWaitIdle(vulkan_device->device);
-                if(!createSwapchain(vulkan_objects, vulkan_device, msg_callback, vulkan_screen)) {
-                    MSG_ERROR(msg_callback, &TRACED_STR("failed to recreate swapchain"));
-                    goto _render_loop_fail;
-                }
-                continue;
-            }
-            if(acquire_result != VK_SUCCESS && acquire_result != VK_SUBOPTIMAL_KHR) {
-                MSG_ERROR(msg_callback, &TRACED_STR("failed to acquire swapchain image"));
-                goto _render_loop_fail;
-            }
-        }
-
-        vkResetFences(vulkan_device->device, 1, &render_objects.frame_fence);
-
-        /* BEGIN COMMAND BUFFER */ {
-            const VkCommandBufferBeginInfo command_buffer_begin_info = {
-                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
-            };
-            vkResetCommandBuffer(render_objects.command_buffer, 0);
-            if(vkBeginCommandBuffer(render_objects.command_buffer, &command_buffer_begin_info) != VK_SUCCESS) {
-                MSG_ERROR(msg_callback, &TRACED_STR("failed to begin render command buffer"));
-                goto _render_loop_fail;
-            }
-        }
-
-        /* TOP SWAPCHAIN TRANSITION */ {
-            const VkImageMemoryBarrier top_swapchain_barrier = {
-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                .subresourceRange = {
-                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel = 0,
-                    .levelCount = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount = 1,
-                },
-                .image = vulkan_screen->swapchain_images[render_image_id]
-            };
-
-            vkCmdPipelineBarrier(
-                render_objects.command_buffer, 
-                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 
-                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 
-                0, 0, NULL, 0, NULL, 
-                1, &top_swapchain_barrier
-            );
-        }
-
-
-        /* BOTTOM SWAPCHAIN TRANSITION */ {
-            const VkImageMemoryBarrier bottom_swapchain_barrier = {
-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                .subresourceRange = {
-                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel = 0,
-                    .levelCount = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount = 1,
-                },
-                .image = vulkan_screen->swapchain_images[render_image_id]
-            };
-
-            vkCmdPipelineBarrier(
-                render_objects.command_buffer, 
-                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 
-                VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 
-                0, 0, NULL, 0, NULL, 
-                1, &bottom_swapchain_barrier
-            );
-        }
-        
-        /* END COMMAND BUFFER */ {
-            if(vkEndCommandBuffer(render_objects.command_buffer) != VK_SUCCESS) {
-                MSG_ERROR(msg_callback, &TRACED_STR("failed to end render command buffer"));
-                goto _render_loop_fail;
-            }
-        }
-
-        /* SUBMIT */ {
-            const VkSubmitInfo submit_info = {
-                .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                .commandBufferCount = 1,
-                .pCommandBuffers = &render_objects.command_buffer,
-                .waitSemaphoreCount = 1,
-                .pWaitSemaphores = &render_objects.image_available_semaphore,
-                .signalSemaphoreCount = 1,
-                .pSignalSemaphores = &render_objects.image_submit_semaphores[render_image_id],
-                .pWaitDstStageMask = (const VkPipelineStageFlags []){VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT}
-            };
-
-            if(vkQueueSubmit(vulkan_device->render_queue, 1, &submit_info, render_objects.frame_fence) != VK_SUCCESS) {
-                MSG_ERROR(msg_callback, &TRACED_STR("failed to submit render queue"));
-                goto _render_loop_fail;
-            }
-        }
-
-        /* PRESENT */ {
-            const VkPresentInfoKHR present_info = {
-                .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-                .swapchainCount = 1,
-                .pSwapchains = &vulkan_screen->swapchain,
-                .pImageIndices = &render_image_id,
-                .waitSemaphoreCount = 1,
-                .pWaitSemaphores = &render_objects.image_submit_semaphores[render_image_id]
-            };
-
-            VkResult present_result = vkQueuePresentKHR(vulkan_device->render_queue, &present_info);
-            if(present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR) {
-                MSG_LOG(msg_callback, &CONST_STRING("resizing window on present"));
-                vkDeviceWaitIdle(vulkan_device->device);
-                if(!createSwapchain(vulkan_objects, vulkan_device, msg_callback, vulkan_screen)) {
-                    MSG_ERROR(msg_callback, &TRACED_STR("failed to recreate swapchain"));
-                    goto _render_loop_fail;
-                }
-            } 
-            else if(present_result != VK_SUCCESS) {
-                MSG_ERROR(msg_callback, &TRACED_STR("failed to present render image"));
-                goto _render_loop_fail;
-            }
+        if(!renderIteration(
+            vulkan_objects,
+            vulkan_device,
+            &render_objects ,
+            msg_callback, 
+            loop_callback, 
+            vulkan_screen
+        )) {
+            MSG_ERROR(msg_callback, &TRACED_STR("render loop iteration fail"));
+            goto _render_loop_fail;
         }
     }
-
     MSG_LOG(msg_callback, &CONST_STRING("exiting vulkan render loop"));
 
     /* stop device and wait till it finishes */
     vkDeviceWaitIdle(vulkan_device->device);
 
-    if(!detsroyRenderObjects(
+    if(!destroyRenderObjects(
         vulkan_device,
         vulkan_screen->swapchain_image_count,
         msg_callback,
@@ -1745,13 +2049,14 @@ runVulkanLoop(
         MSG_WARNING(msg_callback, &TRACED_STR("failed to destroy render objects"));
     }
 
+    /* success */
     return TRUE;
 
     _render_loop_fail: {
         /* stop device and wait till it finishes */
         vkDeviceWaitIdle(vulkan_device->device);
 
-        if(!detsroyRenderObjects(
+        if(!destroyRenderObjects(
             vulkan_device,
             vulkan_screen->swapchain_image_count,
             msg_callback,
@@ -1761,6 +2066,67 @@ runVulkanLoop(
         } 
     }
     _render_objects_create_fail: {
+        return FALSE;
+    }
+}
+
+b32 createVulkanBuffers(
+    VulkanSegment *vulkan, 
+    CreateVulkanBuffersIn *input, 
+    CreateVulkanBuffersOut *output
+) {
+    VulkanSegment *vulkan_segment = vulkan;
+    const VulkanObjects *vulkan_objects = &vulkan_segment->vulkan_objects;
+    const VulkanDevice *vulkan_device = &vulkan_segment->vulkan_device;
+    VulkanMemory *vulkan_memory = &vulkan_segment->vulkan_memory;
+    VulkanBuffers *vulkan_buffers = &vulkan_segment->vulkan_buffers;
+
+    MsgCallback_pfn msg_callback = vulkan_objects->msg_callback;
+
+    /* VALIDATION */ {
+        if(!input) {
+            MSG_ERROR(msg_callback, &TRACED_STR("invalid input pointer for vulkan create buffers procedure"));
+            goto _validation_fail;
+        }
+        if(input->storage_buffer_count == 0 && !input->uniform_buffer_info) {
+            MSG_LOG(msg_callback, &CONST_STRING("not created any storage or uniform buffers"));
+            goto _success;
+        }
+        if(!output) {
+            MSG_ERROR(msg_callback, &TRACED_STR("invalid output pointer for vulkan create buffers procedure"));
+            goto _validation_fail;
+        }
+        if(input->storage_buffer_count != 0 && !output->storage_buffer_addresses) {
+            MSG_ERROR(msg_callback, &TRACED_STR("invalid storage buffer addresses array in vulkan create buffers output"));
+            goto _validation_fail;
+        }
+    }
+
+    if(vulkan_segment->vulkan_device.memory_model == VULKAN_MEMORY_MODEL_HOST_DEVICE) {
+        if(!createBuffers_HostDeviceMemoryModel(
+            vulkan_device->device,
+            vulkan_memory,
+            input->storage_buffer_count,
+            input->uniform_buffer_info,
+            input->storage_buffer_infos,
+            vulkan_segment->resource_buffers_base,
+            vulkan_segment->resource_buffers_limit,
+            msg_callback,
+            vulkan_buffers
+        )) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to create vulkan buffers"));
+            goto _critical_fail;
+        } else {
+            goto _success;
+        }
+    }
+
+    _success: {
+        return TRUE;
+    }
+
+    _critical_fail: {};
+    _validation_fail: {
         return FALSE;
     }
 }

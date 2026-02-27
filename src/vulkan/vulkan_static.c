@@ -12,12 +12,17 @@
 static VulkanSegment * 
 layoutSegment(
     const Segment *segment, 
-    MsgCallback_pfn msg_callback
+    MsgCallback_pfn msg_callback,
+    VulkanFlags vulkan_flags
 ) {
     String log_str = STACK_STR(256);
 
     /* check if size of segment is appropreate */
     u64 segment_size = (u64)segment->end - (u64)segment->begin;
+    if(((u64)segment->begin & 0x1000) != 0) {
+        MSG_ERROR(msg_callback, &TRACED_STR("unaligned vulkan segment base address"));
+        goto _validation_fail;
+    }
     if(segment_size < MIN_VULKAN_SEGMENT_SIZE) {
         MSG_ERROR(msg_callback, &TRACED_STR("too small vulkan segment size"));
         goto _validation_fail;
@@ -32,33 +37,30 @@ layoutSegment(
     /* initialize segment addresses, segment layout is stored in the segment itself */
     VulkanSegment *vulkan_segment = (VulkanSegment *)segment->begin;
     *vulkan_segment = (VulkanSegment) {
-        .vulkan_objects     = (byte *)segment->begin + sizeof(VulkanSegment),
-        .vulkan_device      = (byte *)segment->begin + sizeof(VulkanSegment) + sizeof(VulkanObjects),
-        .vulkan_memory      = (byte *)segment->begin + sizeof(VulkanSegment) + sizeof(VulkanObjects) + sizeof(VulkanDevice),
-        .vulkan_screen      = (byte *)segment->begin + sizeof(VulkanSegment) + sizeof(VulkanObjects) + sizeof(VulkanDevice) + sizeof(VulkanMemory),
-        .vulkan_descriptors = (byte *)segment->begin + sizeof(VulkanSegment) + sizeof(VulkanObjects) + sizeof(VulkanDevice) + sizeof(VulkanMemory) + sizeof(VulkanScreen),
-        .vulkan_pipelines   = (byte *)segment->begin + sizeof(VulkanSegment) + sizeof(VulkanObjects) + sizeof(VulkanDevice) + sizeof(VulkanMemory) + sizeof(VulkanScreen) + sizeof(VulkanDescriptors),
-
-        .resource_address   = (byte *)segment->begin + VULKAN_STRUCTS_SIZE,
-        .resource_shaders   = (byte *)segment->begin + VULKAN_STRUCTS_SIZE,
-
+        .flags = vulkan_flags,
+        .states = VULKAN_SEGMENT_STATES_NONE,
+        .resource_address               = (byte *)segment->begin + VULKAN_STRUCT_SIZE,
+        .resource_pipelines_base        = (byte *)segment->begin + VULKAN_STRUCT_SIZE,
+        .resource_pipelines_limit       = (byte *)segment->begin + VULKAN_STRUCT_SIZE + MAX_PIPELINES_SIZE,
+        .resource_buffers_base          = (byte *)segment->begin + VULKAN_STRUCT_SIZE + MAX_PIPELINES_SIZE,
+        .resource_buffers_limit         = (byte *)segment->begin + VULKAN_STRUCT_SIZE + MAX_PIPELINES_SIZE + MAX_BUFFERS_SIZE,
         .segment_end = segment->end
     };
 
     /* LOG */ {
         u64 segment_size = (u64)vulkan_segment->segment_end - (u64)vulkan_segment;
-        u64 structs_size = VULKAN_STRUCTS_SIZE;
+        u64 struct_size = VULKAN_STRUCT_SIZE;
         u64 resource_size = (u64)vulkan_segment->segment_end - (u64)vulkan_segment->resource_address;
 
         stringPattern(
             &CONST_STRING(
                 "vulkan segment {\n" 
                 "\tsize: %u64\n"
-                "\tstructs size: %u64\n"
+                "\tstruct size: %u64\n"
                 "\tresources size: %u64\n"
                 "}"
             ),
-            (const void *[]){&segment_size, &structs_size, &resource_size},
+            (const void *[]){&segment_size, &struct_size, &resource_size},
             &log_str
         );
         MSG_LOG(msg_callback, &log_str);
@@ -344,9 +346,9 @@ createVulkanObjects(
     MsgCallback_pfn msg_callback
 ) {
     String log_str = STACK_STR(512);
-    *vulkan_objects = (VulkanObjects){.flags = flags, .msg_callback = msg_callback};
+    *vulkan_objects = (VulkanObjects){.msg_callback = msg_callback};
     b32 is_debug = flags & VULKAN_IN_FLAG_DEBUG;
-    
+
     /* create vulkan_objects */
     vulkan_objects->window = createWindow(name, window_x, window_y, flags, msg_callback);
     if(!vulkan_objects->window) {
@@ -494,10 +496,11 @@ createVulkanObjects(
 
 static b32
 destroyVulkanObjects(
+    u32 flags,
     VulkanObjects *vulkan,
     MsgCallback_pfn msg_callback
 ) {
-    const b32 is_debug = vulkan->flags & VULKAN_IN_FLAG_DEBUG;
+    const b32 is_debug = flags & VULKAN_IN_FLAG_DEBUG;
     b32 result = TRUE;
 
     /* destroy surface */
@@ -1272,7 +1275,7 @@ destroyVulkanDevice(
 
 /* Creates vulkan on given segment, layouts memory, 
     creates vulkan objects, and making  */
-VulkanHandle
+VulkanSegment *
 createVulkan(
     const CreateVulkanIn *input, 
     CreateVulkanOut *output
@@ -1293,9 +1296,11 @@ createVulkan(
 
     MsgCallback_pfn msg_callback = input->msg_callback;
 
+    /* create segment layout */
     VulkanSegment *segment = layoutSegment(
         input->segment, 
-        input->msg_callback
+        input->msg_callback,
+        input->flags
     );
     if(!segment) {
         MSG_ERROR(input->msg_callback, &TRACED_STR("failed to layout vulkan segment"));
@@ -1303,8 +1308,8 @@ createVulkan(
     }
 
     /* structs in segment */
-    VulkanObjects *vulkan_objects = (VulkanObjects *)segment->vulkan_objects;
-    VulkanDevice *vulkan_device = (VulkanDevice *)segment->vulkan_device;
+    VulkanObjects *vulkan_objects = &segment->vulkan_objects;
+    VulkanDevice *vulkan_device = &segment->vulkan_device;
 
     /* create vulkan objects */
     if(!createVulkanObjects(
@@ -1338,7 +1343,7 @@ createVulkan(
         goto _critical_fail;
     }
 
-    return (VulkanHandle)segment;
+    return segment;
 
     /* fails */
     _critical_fail: {
@@ -1348,11 +1353,11 @@ createVulkan(
 
 b32 
 destroyVulkan(
-    VulkanHandle vulkan
+    VulkanSegment *vulkan
 ) {
-    VulkanSegment *vulkan_segment = (VulkanSegment *)vulkan;
-    VulkanObjects *vulkan_objects = (VulkanObjects *)vulkan_segment->vulkan_objects;
-    VulkanDevice *vulkan_device = (VulkanDevice *)vulkan_segment->vulkan_device;
+    VulkanSegment *vulkan_segment = vulkan;
+    VulkanObjects *vulkan_objects = &vulkan_segment->vulkan_objects;
+    VulkanDevice *vulkan_device = &vulkan_segment->vulkan_device;
 
     const MsgCallback_pfn msg_callback = vulkan_objects->msg_callback;
     b32 result = TRUE;
@@ -1363,7 +1368,7 @@ destroyVulkan(
     }
 
     /* vulkan objetcs */
-    if(!destroyVulkanObjects(vulkan_objects, msg_callback)) {
+    if(!destroyVulkanObjects(vulkan_segment->flags, vulkan_objects, msg_callback)) {
         MSG_WARNING(msg_callback, &TRACED_STR("failed to destroy vulkan objects"));
         result = FALSE;
     }
