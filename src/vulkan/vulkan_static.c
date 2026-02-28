@@ -168,18 +168,15 @@ layoutSegment(
         }
     }
 
-    static b32
+    static void
     destroyWindow(
         Window window,
         MsgCallback_pfn msg_callback
     ) {
         /* check for null pointer to indicate if application has bugs in it */
-        if(!window) {
-            MSG_WARNING(msg_callback, &TRACED_STR("trying to destroy window that is a null pointer"));
-            return FALSE;
+        if(!DestroyWindow(window)) {
+            MSG_WARNING(msg_callback, &TRACED_STR("failed to detsroy winapi window"));
         }
-        DestroyWindow(window);
-        return TRUE;
     }
 
 #endif /* _WIN32 */
@@ -494,50 +491,23 @@ createVulkanObjects(
     }
 }
 
-static b32
+static void
 destroyVulkanObjects(
     u32 flags,
     VulkanObjects *vulkan,
     MsgCallback_pfn msg_callback
 ) {
-    const b32 is_debug = flags & VULKAN_IN_FLAG_DEBUG;
-    b32 result = TRUE;
-
     /* destroy surface */
-    if(vulkan->surface) {
-        vkDestroySurfaceKHR(vulkan->instance, vulkan->surface, NULL);
-    } else {
-        MSG_WARNING(msg_callback, &TRACED_STR("can not destroy vulkan surface, pointer is null"));
-    }
-
+    vkDestroySurfaceKHR(vulkan->instance, vulkan->surface, NULL);
     /* if debug flag is set */
-    if(is_debug) {
-        /* destroy debug messenger */
-        if(vulkan->debug_messenger) {
-            vulkan->destroy_debug_messenger(vulkan->instance, vulkan->debug_messenger, NULL);
-        } else {
-            MSG_WARNING(msg_callback, &TRACED_STR("can not destroy vulkan debug messenger, pointer is null"));
-            result = FALSE;
-        }
+    if(flags & VULKAN_IN_FLAG_DEBUG) {
+        vulkan->destroy_debug_messenger(vulkan->instance, vulkan->debug_messenger, NULL);
     }
-
-    /* detsroy instance */
-    if(vulkan->instance) {
-        vkDestroyInstance(vulkan->instance, NULL);
-    } else {
-        MSG_WARNING(msg_callback, &TRACED_STR("can not destroy vulkan instance, pointer is null"));
-        result = FALSE;
-    }
-
+    vkDestroyInstance(vulkan->instance, NULL);
     /* window */
-    if(!destroyWindow(vulkan->window, vulkan->msg_callback)) {
-        MSG_WARNING(msg_callback, &TRACED_STR("failed to destroy vulkan window"));
-        result = FALSE;
-    }
+    destroyWindow(vulkan->window, vulkan->msg_callback);
 
     *vulkan = (VulkanObjects){0};
-
-    return result;
 }
 
 
@@ -1227,46 +1197,22 @@ createVulkanDevice(
     }
 }
 
-static b32
+static void
 destroyVulkanDevice(
     const VulkanObjects *vulkan,
     VulkanDevice *device,
     MsgCallback_pfn msg_callback
 ) {
-    b32 result = TRUE;
-
-    /* COMMAND POOLS */ {
-        if(device->render_command_pool) {
-            vkDestroyCommandPool(device->device, device->render_command_pool, NULL);
-        } else {
-            MSG_WARNING(msg_callback, &TRACED_STR("trying to destroy render command pool, but it is null"));
-            result = FALSE;
-        }
-        if(device->transfer_queue_id != U32_MAX) {
-            if(device->transfer_command_pool) {
-                vkDestroyCommandPool(device->device, device->transfer_command_pool, NULL);
-            } else {
-                MSG_WARNING(msg_callback, &TRACED_STR("trying to destroy transfer command pool, but it is null"));
-            }
-        }
-        if(device->compute_queue_id != U32_MAX) {
-            if(device->compute_command_pool) {
-                vkDestroyCommandPool(device->device, device->compute_command_pool, NULL);
-            } else {
-                MSG_WARNING(msg_callback, &TRACED_STR("trying to destroy compute command pool, but it is null"));
-            }
-        }
+    vkDestroyCommandPool(device->device, device->render_command_pool, NULL);
+    if(device->transfer_queue_id != U32_MAX) {
+        vkDestroyCommandPool(device->device, device->transfer_command_pool, NULL);
+    }
+    if(device->compute_queue_id != U32_MAX) {
+        vkDestroyCommandPool(device->device, device->compute_command_pool, NULL);
     }
 
-    if(device->device) {
-        vkDestroyDevice(device->device, NULL);
-    } else {
-        MSG_WARNING(msg_callback, &TRACED_STR("can not destroy device, pointer is null"));
-        result = FALSE;
-    }
+    vkDestroyDevice(device->device, NULL);
     *device = (VulkanDevice){0};
-
-    return result;
 }
 
 /*  ===============================================================
@@ -1351,7 +1297,7 @@ createVulkan(
     }
 }
 
-b32 
+void 
 destroyVulkan(
     VulkanSegment *vulkan
 ) {
@@ -1360,20 +1306,10 @@ destroyVulkan(
     VulkanDevice *vulkan_device = &vulkan_segment->vulkan_device;
 
     const MsgCallback_pfn msg_callback = vulkan_objects->msg_callback;
-    b32 result = TRUE;
 
-    if(!destroyVulkanDevice(vulkan_objects, vulkan_device, msg_callback)) {
-        MSG_WARNING(msg_callback, &TRACED_STR("failed to destroy vulkan device"));
-        result = FALSE;
-    }
-
+    destroyVulkanDevice(vulkan_objects, vulkan_device, msg_callback);
     /* vulkan objetcs */
-    if(!destroyVulkanObjects(vulkan_segment->flags, vulkan_objects, msg_callback)) {
-        MSG_WARNING(msg_callback, &TRACED_STR("failed to destroy vulkan objects"));
-        result = FALSE;
-    }
+    destroyVulkanObjects(vulkan_segment->flags, vulkan_objects, msg_callback);
 
     MSG_LOG(msg_callback, &CONST_STRING("destroyed vulkan"));
-
-    return result;
 }

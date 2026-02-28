@@ -558,7 +558,7 @@ createVulkanScreen(
 }
 
 
-static b32
+static void
 destroyVulkanScreen(
     const VulkanObjects *vulkan_objects,
     const VulkanDevice *vulkan_device,
@@ -566,53 +566,23 @@ destroyVulkanScreen(
     MsgCallback_pfn msg_callback,
     VulkanScreen *vulkan_screen
 ) {
-    b32 result = TRUE;
+    const u32 image_count = vulkan_screen->swapchain_image_count;
+    VkImageView *image_views = vulkan_screen->swapchain_views;
+    for(u32 i = 0; i < image_count; i++) {
+        vkDestroyImageView(vulkan_device->device, image_views[i], NULL);
+    }
+    vkDestroySwapchainKHR(vulkan_device->device, vulkan_screen->swapchain, NULL);
+    vkDestroyImageView(vulkan_device->device, vulkan_screen->color_view, NULL);
+    vkDestroyImageView(vulkan_device->device, vulkan_screen->depth_view, NULL);
 
-    if(!vulkan_screen->swapchain) {
-        MSG_WARNING(msg_callback, &TRACED_STR("trying to destroy swapchain, but pointer is null"));
-        result = FALSE;
-    } else {
-        const u32 image_count = vulkan_screen->swapchain_image_count;
-        VkImageView *image_views = vulkan_screen->swapchain_views;
-        for(u32 i = 0; i < image_count; i++) {
-            vkDestroyImageView(vulkan_device->device, image_views[i], NULL);
-        }
-        vkDestroySwapchainKHR(vulkan_device->device, vulkan_screen->swapchain, NULL);
-    }
-
-    if(!vulkan_screen->color_view) {
-        MSG_WARNING(msg_callback, &TRACED_STR("trying to destroy screen color view, but pointer is null"));
-        result = FALSE;
-    } else {
-        vkDestroyImageView(vulkan_device->device, vulkan_screen->color_view, NULL);
-    }
-    if(!vulkan_screen->depth_view) {
-        MSG_WARNING(msg_callback, &TRACED_STR("trying to destroy screen depth view, but pointer is null"));
-        result = FALSE;
-    } else {
-        vkDestroyImageView(vulkan_device->device, vulkan_screen->depth_view, NULL);
-    }
+    vkDestroyImage(vulkan_device->device, vulkan_screen->color_image, NULL);
+    vkDestroyImage(vulkan_device->device, vulkan_screen->depth_image, NULL);
 
     if(!freeVram(vulkan_memory, &vulkan_screen->vram_allocation)) {
         MSG_WARNING(msg_callback, &TRACED_STR("failed to free screen images vram"));
-        result = FALSE;
-    }
-    
-    if(!vulkan_screen->color_image) {
-        MSG_WARNING(msg_callback, &TRACED_STR("trying to destroy screen color image, but pointer is null"));
-        result = FALSE;
-    } else {
-        vkDestroyImage(vulkan_device->device, vulkan_screen->color_image, NULL);
-    }
-    if(!vulkan_screen->depth_image) {
-        MSG_WARNING(msg_callback, &TRACED_STR("trying to destroy screen depth image, but pointer is null"));
-        result = FALSE;
-    } else {
-        vkDestroyImage(vulkan_device->device, vulkan_screen->depth_image, NULL);
     }
 
     *vulkan_screen = (VulkanScreen){0};
-    return result;
 }
 
 /*  ===============================================================
@@ -780,35 +750,18 @@ createVulkanDescritors(
     }
 }
 
-static b32
+static void
 destroyVulkanDescriptors(
     const VulkanDevice *vulkan_device,
-    MsgCallback_pfn msg_callback,
     VulkanDescriptors *descriptors
 ) {
-    String log_str = STACK_STR(256);
-    b32 result = TRUE;
-
     VkDescriptorSetLayout *layouts = descriptors->layouts;
     for(u32 i = 0; i < DESCRIPTOR_SET_COUNT; i++) {
-        if(layouts[i]) {
-            vkDestroyDescriptorSetLayout(vulkan_device->device, layouts[i], NULL); 
-        } else {
-            stringPattern(&TRACED_STR("trying to destroy descriptor set layout that is null id: %u32"), (const void *[]){&i}, &log_str);
-            MSG_WARNING(msg_callback, &log_str);
-            result = FALSE;
-        }
+        vkDestroyDescriptorSetLayout(vulkan_device->device, layouts[i], NULL);
     }
-
-    if(descriptors->pool) {
-        vkDestroyDescriptorPool(vulkan_device->device, descriptors->pool, NULL);
-    } else {
-        MSG_WARNING(msg_callback, &TRACED_STR("trying to destroy descripotr pool that it is null"));
-        result = FALSE;
-    }
+    vkDestroyDescriptorPool(vulkan_device->device, descriptors->pool, NULL);
 
     *descriptors = (VulkanDescriptors){0};
-    return result;
 }
 
 /*  ===============================================================
@@ -1329,49 +1282,28 @@ createPipelines(
     }
 }
 
-static b32
+static void
 destroyPipelines(
     const VulkanDevice *vulkan_device,
-    VulkanPipelines *vulkan_pipelines,
-    MsgCallback_pfn msg_callback
+    VulkanPipelines *vulkan_pipelines
 ) {
-    String log_str = STACK_STR(256);
     VkDevice device = vulkan_device->device;
-    b32 result = TRUE;
 
     const u32 graphics_pipeline_count = vulkan_pipelines->graphics_pipeline_count;
     const u32 compute_pipeline_count = vulkan_pipelines->compute_pipeline_count;
     VkPipeline *graphics_pipelines = vulkan_pipelines->graphics_pipelines;
     VkPipeline *compute_pipelines = vulkan_pipelines->compute_pipelines;
+
     for(u32 i = 0; i < graphics_pipeline_count; i++) {
-        if(graphics_pipelines[i]) {
-            vkDestroyPipeline(device, graphics_pipelines[i], NULL);
-        } else {
-            stringPattern(&TRACED_STR("trying to destroy graphics pipeline that is null id: %u32"), (const void *[]){&i}, &log_str);
-            MSG_WARNING(msg_callback, &log_str);
-            result = FALSE;
-        }
+        vkDestroyPipeline(device, graphics_pipelines[i], NULL);
     }
     for(u32 i = 0; i < compute_pipeline_count; i++) {
-        if(compute_pipelines[i]) {
-            vkDestroyPipeline(device, compute_pipelines[i], NULL);
-        } else {
-            stringPattern(&TRACED_STR("trying to destroy compute pipeline that is null id: %u32"), (const void *[]){&i}, &log_str);
-            MSG_WARNING(msg_callback, &log_str);
-            result = FALSE;
-        }
+        vkDestroyPipeline(device, compute_pipelines[i], NULL);
     }
 
-    if(vulkan_pipelines->pipeline_layout) {
-        vkDestroyPipelineLayout(device, vulkan_pipelines->pipeline_layout, NULL);
-    } else {
-        MSG_WARNING(msg_callback, &TRACED_STR("trying to detsroy vulkan pipeline layout, but it is null"));
-        result = FALSE;
-    }
+    vkDestroyPipelineLayout(device, vulkan_pipelines->pipeline_layout, NULL);
 
     *vulkan_pipelines = (VulkanPipelines){0};
-
-    return result;
 }
 
 /*  ===============================================================
@@ -1398,7 +1330,8 @@ createBuffers_HostDeviceMemoryModel(
         goto _validation_fail;
     }
 
-    *vulkan_buffers = (VulkanBuffers){
+    *vulkan_buffers = (VulkanBuffers) {
+        .memory_model = VULKAN_MEMORY_MODEL_HOST_DEVICE,
         .storage_buffer_count = storage_buffer_count,
         .storage_buffers = (VkBuffer *)resources_base,
         .storage_dst_regions = (VramRegion *)(
@@ -1583,13 +1516,6 @@ createBuffers_HostDeviceMemoryModel(
     _validation_fail: {
         return FALSE;
     }
-}
-
-static b32
-destroyBuffers(
-    
-) {
-    
 }
 
 /*  ===============================================================
@@ -1944,7 +1870,7 @@ b32 createVulkanDynamic(
     }
 }
 
-b32 destroyVulkanDynamic(
+void destroyVulkanDynamic(
     VulkanSegment *vulkan
 ) {
     VulkanSegment *vulkan_segment = vulkan;
@@ -1956,46 +1882,11 @@ b32 destroyVulkanDynamic(
     VulkanScreen *vulkan_screen = &vulkan_segment->vulkan_screen;
     VulkanPipelines *vulkan_pipelines = &vulkan_segment->vulkan_pipelines;
     VulkanDescriptors *vulkan_descriptors = &vulkan_segment->vulkan_descriptors;
-    b32 result = TRUE;
 
-    if(!destroyPipelines(
-        vulkan_device,
-        vulkan_pipelines,
-        msg_callback
-    )) {
-        MSG_WARNING(msg_callback, &TRACED_STR("failed to destroy vulkan pipelines"));
-        result = FALSE;
-    }
-
-    if(!destroyVulkanDescriptors(
-        vulkan_device,
-        msg_callback,
-        vulkan_descriptors
-    )) {
-        MSG_WARNING(msg_callback, &TRACED_STR("failed to destroy vulkan descriptors"));
-        result = FALSE;
-    }
-
-    if(!destroyVulkanScreen(
-        vulkan_objects, 
-        vulkan_device, 
-        vulkan_memory,
-        msg_callback, 
-        vulkan_screen
-    )) {
-        MSG_WARNING(msg_callback, &TRACED_STR("failed to destroy screen vulkan screen textures"));
-        result = FALSE;
-    }
-
-    if(!destroyVulkanMemory(
-        vulkan_memory,
-        msg_callback
-    )) {
-        MSG_WARNING(msg_callback, &TRACED_STR("failed to destroy vulkan memory"));
-        result = FALSE;
-    }
-
-    return result;
+    destroyPipelines(vulkan_device, vulkan_pipelines);
+    destroyVulkanDescriptors(vulkan_device, vulkan_descriptors);
+    destroyVulkanScreen(vulkan_objects, vulkan_device, vulkan_memory, msg_callback, vulkan_screen);
+    destroyVulkanMemory(vulkan_memory, msg_callback);
 }
 
 b32 
@@ -2070,12 +1961,12 @@ runVulkanLoop(
     }
 }
 
-b32 createVulkanBuffers(
-    VulkanSegment *vulkan, 
+b32 
+createVulkanBuffers(
+    VulkanSegment *vulkan_segment, 
     CreateVulkanBuffersIn *input, 
     CreateVulkanBuffersOut *output
 ) {
-    VulkanSegment *vulkan_segment = vulkan;
     const VulkanObjects *vulkan_objects = &vulkan_segment->vulkan_objects;
     const VulkanDevice *vulkan_device = &vulkan_segment->vulkan_device;
     VulkanMemory *vulkan_memory = &vulkan_segment->vulkan_memory;
@@ -2128,5 +2019,49 @@ b32 createVulkanBuffers(
     _critical_fail: {};
     _validation_fail: {
         return FALSE;
+    }
+}
+
+/* PLEASE RETHINK IF YOU WANT TO VALIDATE ON DESTRUCTION IT MIGHT BE STUPID AS FUCK */
+void
+destroyVulkanBuffers(
+    VulkanSegment *vulkan_segment
+) {
+    const VulkanObjects *vulkan_objects = &vulkan_segment->vulkan_objects;
+    const VulkanDevice *vulkan_device = &vulkan_segment->vulkan_device;
+    VulkanBuffers *vulkan_buffers = &vulkan_segment->vulkan_buffers;
+    VulkanMemory *vulkan_memory = &vulkan_segment->vulkan_memory;
+    VkDevice device = vulkan_device->device;
+
+    MsgCallback_pfn msg_callback = vulkan_objects->msg_callback;
+
+    if(!vulkan_buffers->uniform_buffer && vulkan_buffers->storage_buffer_count == 0) {
+        goto _end;
+    }
+
+    if(vulkan_buffers->uniform_buffer) {
+        vkDestroyBuffer(device, vulkan_buffers->uniform_buffer, NULL);
+    }
+
+    const u32 storage_buffer_count = vulkan_buffers->storage_buffer_count;
+    VkBuffer *storage_buffers = vulkan_buffers->storage_buffers;
+    for(u32 i = 0; i < storage_buffer_count; i++) {
+        vkDestroyBuffer(device, storage_buffers[i], NULL);
+    }
+
+    if(vulkan_buffers->src_buffer) {
+        vkDestroyBuffer(device, vulkan_buffers->src_buffer, NULL);
+    }
+    
+    if(vulkan_buffers->src_vram.memory) {
+        freeVram(vulkan_memory, &vulkan_buffers->src_vram);
+    }
+    if(vulkan_buffers->dst_vram.memory) {   
+        freeVram(vulkan_memory, &vulkan_buffers->dst_vram);
+    }
+
+    _end: {
+        *vulkan_buffers = (VulkanBuffers){0};
+        MSG_LOG(msg_callback, &CONST_STRING("destroyed vulkan buffers"));
     }
 }

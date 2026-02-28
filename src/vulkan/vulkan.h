@@ -58,7 +58,7 @@ typedef struct {
 } CreateVulkanOut;
 
 VulkanSegment *createVulkan(const CreateVulkanIn *input, CreateVulkanOut *output);
-b32 destroyVulkan(VulkanSegment *vulkan);
+void destroyVulkan(VulkanSegment *vulkan);
 
 
 #define SHADER_VERTEX_ENTRY "vertexMain"
@@ -138,8 +138,10 @@ typedef struct VulkanRenderCmd VulkanRenderCmd;
 typedef b32 (*VulkanLoop_pfn) (VulkanRenderCmd *cmd);
 
 b32 createVulkanDynamic(VulkanSegment *vulkan, const CreateVulkanDynamicIn *input);
-b32 destroyVulkanDynamic(VulkanSegment *vulkan);
+void destroyVulkanDynamic(VulkanSegment *vulkan);
 b32 createVulkanBuffers(VulkanSegment *vulkan, CreateVulkanBuffersIn *input, CreateVulkanBuffersOut *output);
+void destroyVulkanBuffers(VulkanSegment *vulkan);
+
 b32 runVulkanLoop(VulkanSegment *vulkan, VulkanLoop_pfn loop_callback, MsgCallback_pfn msg_callback);
 
 #define REQUIRED_DEVICE_VRAM_SIZE (1024llu * 1024llu * 1024llu * 2llu)
@@ -277,6 +279,7 @@ b32 runVulkanLoop(VulkanSegment *vulkan, VulkanLoop_pfn loop_callback, MsgCallba
     } DrawMesh;
 
     typedef struct {
+        VulkanMemoryModel memory_model;
         u32 storage_buffer_count;
         VkBuffer uniform_buffer;
         VkBuffer *storage_buffers;
@@ -322,10 +325,9 @@ b32 runVulkanLoop(VulkanSegment *vulkan, VulkanLoop_pfn loop_callback, MsgCallba
 
     /*  Segment layout representation:
     +----------------+---------------+---------------+---------------+--------------------+----------------+-------------------------------------------------------+
-    | VULKAN OBJECTS | VULKAN DEVICE | VULKAN MEMORY | VULKAN SCREEN | VULKAN DESCRIPTORS | VULKAN SHADERS |                                                       |                                                       |
+    | VULKAN OBJECTS | VULKAN DEVICE | VULKAN MEMORY | VULKAN SCREEN | VULKAN DESCRIPTORS | VULKAN SHADERS |                                                       |
     +----------------+---------------+---------------+---------------+--------------------+----------------+-------------------------------------------------------+
                                                                                                 resource address                                                    */
-                                                                                                                                                                                   
     struct VulkanRenderCmd {
         VkCommandBuffer command_buffer;
         const VulkanScreen *vulkan_screen;

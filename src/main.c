@@ -135,16 +135,10 @@ main(
         return -1;
     }
 
-    if(!destroyVulkanDynamic(vulkan)) {
-        MSG_ERROR(msgCallback, &TRACED_STR("failed to destroy dynamic vulkan"));
-        return -1;
-    }
-
-    if(!destroyVulkan(vulkan)) {
-        MSG_ERROR(msgCallback, &TRACED_STR("failed to destroy vulkan"));
-        return -1;
-    }
-
+    destroyVulkanBuffers(vulkan);
+    destroyVulkanDynamic(vulkan);
+    destroyVulkan(vulkan);
+    
     if(!VirtualFree(virtual_allocation, 0, MEM_RELEASE)) {
         MSG_ERROR(msgCallback, &TRACED_STR("failed to free virtual memory"));
         return -1;
