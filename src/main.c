@@ -1,5 +1,6 @@
 #include <base.h>
-#include "vulkan/vulkan.h"
+#include "gpu/gpu.h"
+#include "files/files.h"
 
 void 
 msgCallback(
@@ -33,24 +34,37 @@ msgCallback(
     }
 }
 
-u64 
-readShaderFile(
-    const char *name, 
-    Buffer *buffer
+#define STRUCTS_BUFFER_SIZE (4088)
+static struct {
+    u64 edge;
+    byte buffer[STRUCTS_BUFFER_SIZE];
+} s_structs_buffer;
+
+void *allocateStruct(
+    u64 size,
+    u64 alignment
 ) {
-    u64 file_size = fileToBuffer(&CONST_STRING(name), buffer);
-    if(file_size > buffer->size || file_size == 0) {
-        return 0;
+    u64 alloc_begin = ALIGN(s_structs_buffer.edge, alignment);
+    u64 alloc_end = alloc_begin + size;
+    /* not enough space */
+    if(alloc_end > STRUCTS_BUFFER_SIZE) {
+        MSG_WARNING(msgCallback, &TRACED_STR("structs buffer filled up"));
+        return NULL;
     }
-    return file_size;
+    /* all good, shift edge and return begin address */
+    s_structs_buffer.edge = alloc_end;
+    return (void *)(s_structs_buffer.buffer + alloc_begin);
 }
 
-b32
-renderLoop(
-    VulkanRenderCmd *cmd
+/* empty proc, because arena */
+void freeStruct(
+    void *allocation
 ) {
-
-    return TRUE;
+    if((u64)allocation > (u64)(s_structs_buffer.buffer + s_structs_buffer.edge)) {
+        MSG_WARNING(msgCallback, &TRACED_STR("trying to free structs buffer allocation, that is out of bounds already"));
+    }
+    s_structs_buffer.edge = ((u64)allocation - (u64)s_structs_buffer.buffer);
+    return;
 }
 
 i32 
@@ -58,91 +72,67 @@ main(
     i32 argc, 
     char **argv
 ) {
-    void *virtual_allocation = VirtualAlloc(NULL, 1024 * 64, MEM_RESERVE, PAGE_READWRITE);
-    if(!virtual_allocation) {
-        MSG_ERROR(msgCallback, &TRACED_STR("failed to allocate virtual memory"));
+    LoadInitFilesIn init_files_in = {
+        .dir_path = "./out/data",
+        .flags = RESOURCE_FILE_SHADERS
+    };
+    LoadInitFilesOut init_files_out = (LoadInitFilesOut){0};
+    if(!loadInitFiles(
+        &init_files_in, 
+        &init_files_out, 
+        msgCallback
+    )) {
+        MSG_ERROR(msgCallback, &TRACED_STR("failed to load init files"));
         return -1;
     }
 
-    Segment segment = {virtual_allocation, (byte *)virtual_allocation + 1024 * 64};
-
-    Buffer vertex_shader = (Buffer){.buffer = (char[1024 * 4]){0}, .size = 1024 * 4};
-    Buffer fragment_shader = (Buffer){.buffer = (char[1024 * 4]){0}, .size = 1024 * 4};
-    u64 vertex_size = 0;
-    u64 fragment_size = 0;
-    /* TEST LOAD SHADERS */ {
-        vertex_size = readShaderFile("out/data/triangle_v.spv", &vertex_shader);
-        fragment_size = readShaderFile("out/data/triangle_f.spv", &fragment_shader);
-        if(vertex_size == 0 || fragment_size == 0) {
-            MSG_ERROR(msgCallback, &TRACED_STR("failed to load shaders to buffers"));
-            return -1;
-        }
-    }
-
-    CreateVulkanIn create_vulkan_in = {
-        .msg_callback = msgCallback,
-        .segment = &segment,
-        .name = "Wreck 3D",
-        .flags = VULKAN_IN_FLAG_DEBUG | VULKAN_IN_FLAG_RESIZE,
-        .x = 800,
-        .y = 600
+    /* gpu mount */
+    MountGPUIn mount_gpu_in = {
+        .flags = GPU_FLAG_DEBUG,
+        .window_name = "Scuby",
+        .window_x = 800,
+        .window_y = 600,
+        .msg_callback = msgCallback
     };
-    CreateVulkanOut create_vulkan_out = (CreateVulkanOut){0};
-    CreateVulkanDynamicIn create_vulkan_dynamic_in = {
-        .graphics_shaders = (VulkanGraphicsPipelineInfo[]) {
-            (VulkanGraphicsPipelineInfo) {
-                .name = "traingle",
-                .vertex_spv = vertex_shader.buffer,
-                .fragment_spv = fragment_shader.buffer,
-                .vertex_spv_size = vertex_size,
-                .fragment_spv_size = fragment_size
-            }
+    MountGPUOut mount_gpu_out = (MountGPUOut){0};
+    CreateGPUStaticResourcesIn create_static_resources_in = {
+        .program_count = 2,
+        .programs = (GPUProgramInfo[]) {
+            GPU_GRAPHICS_PROGRAM(SHADER_TRIANGLE, 0, init_files_out.shaders_address),
+            GPU_GRAPHICS_PROGRAM(SHADER_TRIANGLE, 0, init_files_out.shaders_address)
         },
-        .graphics_shader_count = 1
-    };
-    CreateVulkanBuffersIn create_vulkan_buffers_in = (CreateVulkanBuffersIn){
-        .uniform_buffer_info = (VulkanBufferInfo[1]){(VulkanBufferInfo){.size = 1024}},
-        .storage_buffer_count = 4,
-        .storage_buffer_infos = (VulkanBufferInfo[]){
-            (VulkanBufferInfo) {.size = 512},
-            (VulkanBufferInfo) {.size = 256},
-            (VulkanBufferInfo) {.size = 122},
-            (VulkanBufferInfo) {.size = 144}
+        .uniform_buffer = (GPUBufferInfo[1]) {
+            (GPUBufferInfo) {.size = 64}
+        },
+        .mutable_storage_buffer_count = 1,
+        .storage_buffer_count = 2,
+        .storage_buffers = (GPUBufferInfo[]) {
+            (GPUBufferInfo) {.size = 1024},
+            (GPUBufferInfo) {.size = 1024 * 64}
         }
     };
-    CreateVulkanBuffersOut create_vulkan_buffers_out = (CreateVulkanBuffersOut){
-        .storage_buffer_addresses = (void* [4]){0}
-    };
+    CreateGPUStaticResourcesOut create_static_resources_out = (CreateGPUStaticResourcesOut){0};
 
-    VulkanSegment *vulkan = createVulkan(&create_vulkan_in, &create_vulkan_out);
-    if(!vulkan) {
-        MSG_ERROR(msgCallback, &TRACED_STR("failed to create vulkan"));
-        return -1;
+    GPU *gpu = mountGPU(
+        &mount_gpu_in, 
+        &mount_gpu_out,
+        allocateStruct,
+        freeStruct
+    );
+    if(!gpu) {
+        MSG_ERROR(msgCallback, &TRACED_STR("failed to mount GPU"));
+    }
+    if(!createGPUStaticResources(
+        gpu,
+        &create_static_resources_in,
+        &create_static_resources_out
+    )) {
+        MSG_ERROR(msgCallback, &TRACED_STR("failed to create GPU static resources"));
     }
 
-    if(!createVulkanDynamic(vulkan, &create_vulkan_dynamic_in)) {
-        MSG_ERROR(msgCallback, &TRACED_STR("failed to create dynamic vulkan"));
-        return -1;
-    }
+    closeInitFiles();
 
-    if(!createVulkanBuffers(vulkan, &create_vulkan_buffers_in, &create_vulkan_buffers_out)) {
-        MSG_ERROR(msgCallback, &TRACED_STR("failed to create vulkan buffers"));
-        return -1;
-    }
-
-    if(!runVulkanLoop(vulkan, renderLoop, msgCallback)) {
-        MSG_ERROR(msgCallback, &TRACED_STR("failed to run vulkan loop"));
-        return -1;
-    }
-
-    destroyVulkanBuffers(vulkan);
-    destroyVulkanDynamic(vulkan);
-    destroyVulkan(vulkan);
-    
-    if(!VirtualFree(virtual_allocation, 0, MEM_RELEASE)) {
-        MSG_ERROR(msgCallback, &TRACED_STR("failed to free virtual memory"));
-        return -1;
-    }
-
+    destroyGPUStaticResources(gpu);
+    dismountGPU(gpu);
     return 0;
 }
