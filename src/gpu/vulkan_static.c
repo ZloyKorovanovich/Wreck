@@ -1,16 +1,6 @@
 #define VULKAN_INTERNAL
 #include "gpu.h"
 
-
-#define ADJUST_GPU_BUFFER_LOCATION(mem_req, loc, alloc_size, bits)  \
-alloc_size = ALIGN(alloc_size, mem_req.alignment);                  \
-loc = (GPUBufferLocation) {                                         \
-    .offset = alloc_size,                                           \
-    .size = mem_req.size                                            \
-};                                                                  \
-alloc_size += mem_req.size;                                         \
-bits &= mem_req.memoryTypeBits;
-
 /* DESCRIPTOR_SET_COUNT is indicating how many descriptors exist */
 static b32 createDescriptors(
     VkDevice vk_device,
@@ -364,7 +354,6 @@ static VkPipeline createGraphicsPipeline(
     return pipeline;
 }
 
-/* FIX: null terminated array in case of error, just fill whole array with 0 before creation */
 static b32 createPrograms(
     const GPUDevice *gpu_device,
     MsgCallback_pfn msg_callback,
@@ -375,6 +364,11 @@ static b32 createPrograms(
 ) {
     String log_str = STACK_STR(256);
     VkDevice vk_device = gpu_device->vk_device;
+
+    /* zero initialize */
+    for(u32 i = 0; i < program_count; i++) {
+        pipelines[i] = NULL;
+    }
 
     /* create programs one by one */
     for(u32 i = 0; i < program_count; i++) {
@@ -451,19 +445,14 @@ static b32 createPrograms(
             MSG_LOG(msg_callback, &log_str);
             continue;
 
-            /* safe destruction of pipeline and modules */
-            /* if fail, destroy current pipeline and set value to NULL */
+            /* safe destruction of modules */
             _graphics_pipeline_fail: {
-                if(pipelines[i]) {
-                    vkDestroyPipeline(vk_device, pipelines[i], NULL);
-                }
                 if(vertex_module) {
                     vkDestroyShaderModule(vk_device, vertex_module, NULL);
                 }
                 if(fragment_module) {
                     vkDestroyShaderModule(vk_device, fragment_module, NULL);
                 }
-                pipelines[i] = NULL;
                 return FALSE;
             }
         }
@@ -482,148 +471,193 @@ static b32 createPrograms(
     return TRUE;
 }
 
-/* FIX: null terminated array in case of error, just fill whole array with 0 before creation */
-/* ADD: initial write of user data provided through pointer in info struct, memory mapping */
 static b32 createBuffers(
     /* inputs */
-    const GPUDevice *gpu_device,
-    GPUMemoryAllocator *gpu_memory_allocator,
+    GPUMemoryAllocator *memory_allocator,
     MsgCallback_pfn msg_callback,
-    u32 mutable_storage_buffer_count,
-    u32 storage_buffer_count,
     const GPUBufferInfo *uniform_buffer_info,
     const GPUBufferInfo *storage_buffer_infos,
+    u32 mutable_storage_buffer_count,
+    u32 storage_buffer_count,
     /* outputs */
     VkBuffer *uniform_buffer,
     VkBuffer *storage_buffers,
     GPUBufferLocation *uniform_buffer_location,
     GPUBufferLocation *storage_buffer_locations,
     GPUMemory *mutable_memory,
-    GPUMemory *immutable_memory
+    GPUMemory *immutable_memory,
+    void **mutable_memory_map
 ) {
-    VkDevice vk_device = gpu_device->vk_device;
-    u64 mutable_memory_size = 0;
-    u64 immutable_memory_size = 0;
-    u32 mutable_memory_bits = U32_MAX;
-    u32 immutable_memory_bits = U32_MAX;
+    String   log_str                 = STACK_STR(256);
+    VkDevice vk_device               = memory_allocator->device;
 
-    String log_str = STACK_STR(256);
+    u64      mutable_memory_size     = 0;
+    u64      immutable_memory_size   = 0;
+    u32      mutable_memory_bits     = U32_MAX;
+    u32      immutable_memory_bits   = U32_MAX;
 
-    VkBufferCreateInfo buffer_create_info = (VkBufferCreateInfo){0};
-    VkMemoryRequirements memory_requirements = (VkMemoryRequirements){0};
-
-    if(uniform_buffer_info) {
-        buffer_create_info = (VkBufferCreateInfo) {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-            .size = uniform_buffer_info->size
-        };
-        if(vkCreateBuffer(vk_device, &buffer_create_info, NULL, uniform_buffer) != VK_SUCCESS) {
-            MSG_ERROR(msg_callback, &TRACED_STR("failed to create uniform buffer"));
-            if(*uniform_buffer) {
-                vkDestroyBuffer(vk_device, *uniform_buffer, NULL);
-                *uniform_buffer = NULL;
-            }
-            return FALSE;
+    /* ZERO INITIALIZE */ {
+        if(uniform_buffer_info) {
+            *uniform_buffer = NULL;
+            *uniform_buffer_location = (GPUBufferLocation){0};
         }
+        for(u32 i = 0; i < storage_buffer_count; i++) {
+            storage_buffers[i] = NULL;
+            storage_buffer_locations[i] = (GPUBufferLocation){0};
+        }
+    }
+
+    /* CREATE */ {
+        /* uniform buffer */
+        if(uniform_buffer_info) {
+            /* create buffer */
+            const VkBufferCreateInfo buffer_info = {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                .size = uniform_buffer_info->size
+            };
+            if(vkCreateBuffer(vk_device, &buffer_info, NULL, uniform_buffer) != VK_SUCCESS) {
+                MSG_ERROR(msg_callback, &TRACED_STR("failed to create uniform buffer"));
+                return FALSE;
+            }
+
+            /* add memory to allocation request */
+            VkMemoryRequirements memory_requirements = (VkMemoryRequirements){0};
+            vkGetBufferMemoryRequirements(vk_device, *uniform_buffer, &memory_requirements);
+            ADJUST_GPU_BUFFER_LOCATION(
+                memory_requirements, 
+                *uniform_buffer_location, 
+                mutable_memory_size, 
+                mutable_memory_bits
+            );
+        }
+
+        /* mutable storage buffers i e [0; mutable_storage_buffer_count) */
+        for(u32 i = 0; i != mutable_storage_buffer_count; i++) {
+            /* create buffer */
+            const VkBufferCreateInfo buffer_info = {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                .size = storage_buffer_infos[i].size
+            };
+            if(vkCreateBuffer(vk_device, &buffer_info, NULL, &storage_buffers[i]) != VK_SUCCESS) {
+                stringPattern(
+                    &TRACED_STR("failed to create mutable storage buffer id: %u32/%u32"),
+                    (const void *[]){&i, &storage_buffer_count},
+                    &log_str
+                );
+                MSG_ERROR(msg_callback, &log_str);
+                return FALSE;
+            }
+
+            /* add memory to allocation request */
+            VkMemoryRequirements memory_requirements = (VkMemoryRequirements){0};
+            vkGetBufferMemoryRequirements(vk_device, storage_buffers[i], &memory_requirements);
+            ADJUST_GPU_BUFFER_LOCATION(
+                memory_requirements, 
+                storage_buffer_locations[i], 
+                mutable_memory_size, 
+                mutable_memory_bits
+            );
+        }
+
+        /* immutable storage buffers j : [mutable_storage_buffer_count; storage_buffer_count) */
+        for(u32 j = mutable_storage_buffer_count; j != storage_buffer_count; j++) {
+            /* create buffer */
+            const VkBufferCreateInfo buffer_info = {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                .size = storage_buffer_infos[j].size
+            };
+            if(vkCreateBuffer(vk_device, &buffer_info, NULL, &storage_buffers[j]) != VK_SUCCESS) {
+                stringPattern(
+                    &TRACED_STR("failed to create immutable storage buffer id: %u32/%u32"),
+                    (const void *[]){&j, &storage_buffer_count},
+                    &log_str
+                );
+                MSG_ERROR(msg_callback, &log_str);
+                return FALSE;
+            }
+
+            /* add memory to allocation request */
+            VkMemoryRequirements memory_requirements = (VkMemoryRequirements){0};
+            vkGetBufferMemoryRequirements(vk_device, storage_buffers[j], &memory_requirements);
+            ADJUST_GPU_BUFFER_LOCATION(
+                memory_requirements, 
+                storage_buffer_locations[j], 
+                immutable_memory_size, 
+                immutable_memory_bits
+            );
+        }
+    }
+
+    /* ALLOCATE */ {
+        if(mutable_memory_size != 0) {
+            if(!allocateGPUMemory(
+                memory_allocator,
+                "mutable buffers memory allocation",
+                GPU_MEMORY_USE_HOST_TO_DEVICE,
+                mutable_memory_bits,
+                mutable_memory_size,
+                mutable_memory
+            )) {
+                MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate mutable buffers memory"));
+                return FALSE;
+            }
+        }
+
+        if(immutable_memory_size != 0) {
+            if(!allocateGPUMemory(
+                memory_allocator,
+                "immutable buffers memory allocation",
+                GPU_MEMORY_USE_DEVICE,
+                immutable_memory_bits,
+                immutable_memory_size,
+                immutable_memory
+            )) {
+                MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate immutable buffers memory"));
+                return FALSE;
+            }
+        }
+    }
+
+    /* BIND */ {
+        /* mutable uniform buffer */
+        if(*uniform_buffer) {
+            if(vkBindBufferMemory(vk_device, *uniform_buffer, mutable_memory->memory, 0) != VK_SUCCESS) {
+                MSG_ERROR(msg_callback, &TRACED_STR("failed to bind uniform buffer memory"));
+                return FALSE;
+            }
+        } 
+        /* mutable i : [0; mutable_storage_buffer_count) */
+        for(u32 i = 0; i < mutable_storage_buffer_count; i++) {
+            if(vkBindBufferMemory(vk_device, storage_buffers[i], mutable_memory->memory, 0) != VK_SUCCESS) {
+                stringPattern(
+                    &TRACED_STR("failed to bind mutable storage buffer memory id: %u32/%u32"),
+                    (const void *[]){&i, &storage_buffer_count},
+                    &log_str
+                );
+                MSG_ERROR(msg_callback, &log_str);
+                return FALSE;
+            }
+        }
+        /* immutable j : [mutable_storage_buffer_count ; storage_buffer_count) */
+        for(u32 j = mutable_storage_buffer_count; j < storage_buffer_count; j++) {
+            if(vkBindBufferMemory(vk_device, storage_buffers[j], immutable_memory->memory, 0) != VK_SUCCESS) {
+                stringPattern(
+                    &TRACED_STR("failed to bind immutable storage buffer memory id: %u32/%u32"),
+                    (const void *[]){&j, &storage_buffer_count},
+                    &log_str
+                );
+                MSG_ERROR(msg_callback, &log_str);
+                return FALSE;
+            }
+        }
+    }
     
-        /* adjust allocation size and set buffer location */
-        vkGetBufferMemoryRequirements(vk_device, *uniform_buffer, &memory_requirements);
-        ADJUST_GPU_BUFFER_LOCATION(memory_requirements, *uniform_buffer_location, mutable_memory_size, mutable_memory_bits);
-
-        MSG_LOG(msg_callback, &CONST_STRING("created vulkan uniform buffer"));
-    }
-    for(u32 i = 0; i < mutable_storage_buffer_count; i++) {
-        buffer_create_info = (VkBufferCreateInfo) {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            .size = storage_buffer_infos[i].size
-        };
-        if(vkCreateBuffer(vk_device, &buffer_create_info, NULL, &storage_buffers[i]) != VK_SUCCESS) {
-            stringPattern(
-                &TRACED_STR("failed to create mutable storage buffer id: %u32/%u32"),
-                (const void *[]){&i, &storage_buffer_count},
-                &log_str
-            );
-            MSG_ERROR(msg_callback, &log_str);
-
-            /* set current buffer to null in case of error */
-            if(storage_buffers[i]) {
-                vkDestroyBuffer(vk_device, storage_buffers[i], NULL);
-                storage_buffers[i] = NULL;
-            }
-            return FALSE;
-        }
-
-        /* adjust allocation size and set buffer location */
-        vkGetBufferMemoryRequirements(vk_device, storage_buffers[i], &memory_requirements);
-        ADJUST_GPU_BUFFER_LOCATION(memory_requirements, storage_buffer_locations[i], mutable_memory_size, mutable_memory_bits);
-
-        stringPattern(
-            &CONST_STRING("created vulkan storage buffer id: %u32/%u32"), 
-            (const void *[]){&i, &storage_buffer_count},
-            &log_str
-        );
-        MSG_LOG(msg_callback, &log_str);
-    }
-    for(u32 i = mutable_storage_buffer_count; i < storage_buffer_count; i++) {
-        buffer_create_info = (VkBufferCreateInfo) {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            .size = storage_buffer_infos[i].size
-        };
-        if(vkCreateBuffer(vk_device, &buffer_create_info, NULL, &storage_buffers[i]) != VK_SUCCESS) {
-            stringPattern(
-                &TRACED_STR("failed to create immutable storage buffer id: %u32/%u32"),
-                (const void *[]){&i, &storage_buffer_count},
-                &log_str
-            );
-            MSG_ERROR(msg_callback, &log_str);
-            
-            if(storage_buffers[i]) {
-                vkDestroyBuffer(vk_device, storage_buffers[i], NULL);
-                storage_buffers[i] = NULL;
-            }
-            return FALSE;
-        }
-
-        /* adjust allocation size and set buffer location */
-        vkGetBufferMemoryRequirements(vk_device, storage_buffers[i], &memory_requirements);
-        ADJUST_GPU_BUFFER_LOCATION(memory_requirements, storage_buffer_locations[i], immutable_memory_size, immutable_memory_bits);
-
-        stringPattern(
-            &CONST_STRING("created vulkan storage buffer id: %u32/%u32"), 
-            (const void *[]){&i, &storage_buffer_count},
-            &log_str
-        );
-        MSG_LOG(msg_callback, &log_str);
-    }
-
-    /* allocate muatble resouce memory */
-    if(mutable_memory_size != 0) {
-        if(!allocateGPUMemory(
-            gpu_memory_allocator, 
-            "static resources mutable allocation", 
-            GPU_MEMORY_USE_HOST_TO_DEVICE,
-            mutable_memory_bits,
-            mutable_memory_size,
-            mutable_memory
-        )) {
-            MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate gpu static resources mutable memory"));
-            return FALSE;
-        }
-    }
-    /* allocate immutable resource memory */
-    if(immutable_memory_size != 0) {
-        if(!allocateGPUMemory(
-            gpu_memory_allocator, 
-            "static resources immutable allocation", 
-            GPU_MEMORY_USE_DEVICE,
-            immutable_memory_bits,
-            immutable_memory_size,
-            immutable_memory
-        )) {
-            MSG_ERROR(msg_callback, &TRACED_STR("failed to allocate gpu static resources immutable memory"));
+    /* MAP */ {
+        if(vkMapMemory(vk_device, mutable_memory->memory, 0, mutable_memory->size, 0, mutable_memory_map) != VK_SUCCESS) {
+            MSG_ERROR(msg_callback, &TRACED_STR("failed to map buffers mutable memory"));
             return FALSE;
         }
     }
@@ -823,9 +857,10 @@ b32 createGPUStaticResources(
     const CreateGPUStaticResourcesIn *input, 
     CreateGPUStaticResourcesOut *output
 ) {
-    const GPUDevice *device = &gpu->device;
-    GPUStaticResources *static_resources = &gpu->static_resources;
-    MsgCallback_pfn msg_callback = gpu->msg_callback;
+    const GPUDevice *    device              = &gpu->device;
+    GPUStaticResources * static_resources    = &gpu->static_resources;
+    MsgCallback_pfn      msg_callback        = gpu->msg_callback;
+
     *static_resources = (GPUStaticResources){0};
 
     if(!createDescriptors(
@@ -904,25 +939,27 @@ b32 createGPUStaticResources(
 
     /* BUFFERS */ {
         if(input->storage_buffer_count != 0 || input->uniform_buffer) {
-            static_resources->mutable_storage_buffer_count = input->mutable_storage_buffer_count;
             static_resources->storage_buffer_count = input->storage_buffer_count;
-            /* create buffers */
+            static_resources->mutable_storage_buffer_count = input->mutable_storage_buffer_count;
+            
             if(!createBuffers(
-                device,
                 &gpu->memory_allocator,
                 msg_callback,
-                input->mutable_storage_buffer_count,
-                input->storage_buffer_count,
                 input->uniform_buffer,
                 input->storage_buffers,
+                input->mutable_storage_buffer_count,
+                input->storage_buffer_count,
+
                 &static_resources->uniform_buffer,
                 static_resources->storage_buffers,
                 &static_resources->uniform_buffer_location,
                 static_resources->storage_buffer_locations,
                 &static_resources->mutable_memory,
-                &static_resources->immutable_memory
+                &static_resources->immutable_memory,
+                &static_resources->mutable_memory_map
             )) {
-                MSG_ERROR(msg_callback, &TRACED_STR("failed to create static resources buffers"))
+                MSG_ERROR(msg_callback, &TRACED_STR("failed to create vulkan buffers"));
+                return FALSE;
             }
         }
     }

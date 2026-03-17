@@ -84,11 +84,16 @@ typedef struct {
     f32 position[4];
     f32 normal[4];
     f32 texcoord[4];
+    u32 bone_indices[4];
+    f32 bone_weights[4];
 } GPUVertex;
 
+typedef u16 GPUIndex;
+
 typedef struct {
+    const char *name;
     GPUVertex *vertices;
-    u16 *indices;
+    GPUIndex *indices;
     u32 vertex_count;
     u32 index_count;
 } GPUMeshInfo;
@@ -148,8 +153,17 @@ typedef struct {
     void **host_mutable_storage_buffers;
 } CreateGPUStaticResourcesOut;
 
+typedef struct {
+    /* put mesh info to 0 if you want a skip slot */
+    GPUMeshInfo *meshes;
+    u32 mesh_count;
+} SwapGPUDynamicResourcesIn;
+
 b32 createGPUStaticResources(GPU *gpu, const CreateGPUStaticResourcesIn *input, CreateGPUStaticResourcesOut *output);
 void destroyGPUStaticResources(GPU *gpu);
+
+/* render system does not swap indices of meshes, its your problem to sort mesh infos in right order */
+b32 swapGPUDynamicResources(GPU *gpu, const SwapGPUDynamicResourcesIn *input);
 
 /* can be swapped with some OPENGL_INTERNAL or D3D_INTERNAL, whatever */
 #ifdef VULKAN_INTERNAL
@@ -174,6 +188,15 @@ void destroyGPUStaticResources(GPU *gpu);
     #define MAX_GPU_MEMORY_ALLOCATIONS (256)
     #define MAX_DESCRIPTOR_BINDINGS (16)
     #define PUSH_CONSTANT_RANGE_SIZE (64)
+
+    #define ADJUST_GPU_BUFFER_LOCATION(mem_req, loc, alloc_size, bits)  \
+    alloc_size = ALIGN(alloc_size, mem_req.alignment);                  \
+    loc = (GPUBufferLocation) {                                         \
+        .offset = alloc_size,                                           \
+        .size = mem_req.size                                            \
+    };                                                                  \
+    alloc_size += mem_req.size;                                         \
+    bits &= mem_req.memoryTypeBits;
 
     typedef enum {
         DESCRIPTOR_SET_BASE_ID = 0,
@@ -217,7 +240,7 @@ void destroyGPUStaticResources(GPU *gpu);
         VkDeviceMemory memory;
         u64 size;
         u32 heap_id;
-        u32 type_id;
+        VkMemoryPropertyFlags flags;
     } GPUMemory;
 
     typedef struct {
@@ -264,7 +287,33 @@ void destroyGPUStaticResources(GPU *gpu);
         GPUMemory mutable_memory;
         GPUMemory immutable_memory;
         GPUMemory screen_memory;
+        void *mutable_memory_map;
     } GPUStaticResources;
+
+    typedef struct {
+        VkBuffer vertex_buffer;
+        VkBuffer index_buffer;
+        u32 vertex_count;
+        u32 index_count;
+    } GPUMesh;
+
+    typedef struct {
+        /* jumps on swap operation */
+        void *resource_address;
+        GPUMesh *meshes;
+        GPUBufferLocation *mesh_locations; /* array double size of mesh_count vertex [i * 2] index [i * 2 + 1] */
+        u32 mesh_count;
+        u32 swap_id;
+        GPUMemory meshes_memory;
+    } GPUDynamicResources;
+
+    typedef struct {
+        VkCommandBuffer transfer_command_buffer;
+        VkCommandBuffer render_command_buffer;
+        #ifdef _WIN32
+            HANDLE dynamic_resources_mutex;
+        #endif
+    } GPUControlCenter;
 
     struct GPU {
         GPUFlags flags;
@@ -272,11 +321,14 @@ void destroyGPUStaticResources(GPU *gpu);
         VkInstance vk_instance;
         VkDebugUtilsMessengerEXT vk_debug_messenger;
         VkSurfaceKHR vk_surface;
+
         /* substructs */
         GPUDevice device;
+        GPUControlCenter control;
         GPUResourceAllocator resource_allocator;
         GPUMemoryAllocator memory_allocator;
-        GPUStaticResources static_resources; 
+        GPUStaticResources static_resources;
+        GPUDynamicResources dynamic_resources;
         /* pfns */
         MsgCallback_pfn msg_callback;
         Allocate_pfn alloc;
@@ -285,7 +337,7 @@ void destroyGPUStaticResources(GPU *gpu);
 
     b32 allocateGPUMemory(GPUMemoryAllocator *allocator, const char *name, GPUMemoryUse use, u32 memory_type_bits, u64 size, GPUMemory *memory);
     b32 freeGPUMemory(GPUMemoryAllocator *allocator, GPUMemory *memory);
-    
+
     #ifdef _WIN32
         static inline void *allocateStaticResources(
             GPUResourceAllocator *allocator, 
@@ -324,5 +376,5 @@ void destroyGPUStaticResources(GPU *gpu);
         };
     #endif /* _WIN32 */
 
-#endif /* GPU_INTERNAL */
+#endif /* VULKAN_INTERNAL */
 #endif

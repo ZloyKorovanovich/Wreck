@@ -818,6 +818,7 @@ b32 allocateGPUMemory(
 
     u32 memory_type_id = U32_MAX;
     u32 memory_heap_id = U32_MAX;
+    VkMemoryPropertyFlags memory_type_flags = 0;
 
     /* select the right possible types arrays to search right flags */
     u32 possible_memory_type_count = 0;
@@ -846,6 +847,7 @@ b32 allocateGPUMemory(
                     if(memory_type_id == U32_MAX) {
                         memory_type_id = j;
                         memory_heap_id = memory_types[j].heapIndex;
+                        memory_type_flags = possible_memory_types[i];
 
                         /* if it is optimal we found the right type */
                         if(is_optimal) {
@@ -857,6 +859,7 @@ b32 allocateGPUMemory(
                     else if(is_optimal) {
                         memory_type_id = j;
                         memory_heap_id = memory_types[j].heapIndex;
+                        memory_type_flags = possible_memory_types[i];
 
                         /* stop search, everything else is worse */
                         goto _found_memory_type;
@@ -895,7 +898,7 @@ b32 allocateGPUMemory(
         .hash_name = name,
         .memory = device_memory,
         .heap_id = memory_heap_id,
-        .type_id = memory_type_id,
+        .flags = memory_type_flags,
         .size = size
     };
 

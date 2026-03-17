@@ -7,7 +7,10 @@
 typedef struct {
     HANDLE shaders_file;
     HANDLE shaders_file_map;
+    HANDLE models_file;
+    HANDLE models_file_map;
     void *shaders_file_address;
+    void *models_file_address;
 } InitFiles;
 
 /* static data */

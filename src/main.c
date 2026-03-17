@@ -67,11 +67,17 @@ void freeStruct(
     return;
 }
 
+static char s_strange_buffer[4096] = {0};
+
 i32 
 main(
     i32 argc, 
     char **argv
 ) {
+    for(u32 i = 0; i < ARRAY_SIZE(s_strange_buffer); i++) {
+        s_strange_buffer[i] = i;
+    }
+
     LoadInitFilesIn init_files_in = {
         .dir_path = "./out/data",
         .flags = RESOURCE_FILE_SHADERS
@@ -102,16 +108,18 @@ main(
             GPU_GRAPHICS_PROGRAM(SHADER_TRIANGLE, 0, init_files_out.shaders_address)
         },
         .uniform_buffer = (GPUBufferInfo[1]) {
-            (GPUBufferInfo) {.size = 64}
+            (GPUBufferInfo) {.size = 64, .init_data = s_strange_buffer}
         },
         .mutable_storage_buffer_count = 1,
         .storage_buffer_count = 2,
         .storage_buffers = (GPUBufferInfo[]) {
-            (GPUBufferInfo) {.size = 1024},
-            (GPUBufferInfo) {.size = 1024 * 64}
+            (GPUBufferInfo) {.size = 1024, .init_data = s_strange_buffer},
+            (GPUBufferInfo) {.size = 2048, .init_data = s_strange_buffer}
         }
     };
-    CreateGPUStaticResourcesOut create_static_resources_out = (CreateGPUStaticResourcesOut){0};
+    CreateGPUStaticResourcesOut create_static_resources_out = (CreateGPUStaticResourcesOut){
+        .host_mutable_storage_buffers = (void *[2]){0}
+    };
 
     GPU *gpu = mountGPU(
         &mount_gpu_in, 
