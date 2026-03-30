@@ -1,146 +1,35 @@
-#include <base.h>
-#include "gpu/gpu.h"
-#include "files/files.h"
+#include "base.h"
+#include "render/render.h"
 
-void 
-msgCallback(
-    i32 code, 
-    const String *msg
+const AllocationCallbacks c_allocator = (AllocationCallbacks) {
+    .allocate = (malloc),
+    .release  = (free)   
+};
+
+i32 main(
+    i32    argc,
+    char** argv
 ) {
-    String print_str = (String) {
-        .string = (char[512]){0},
-        .capacity = 512
-    };
-
-    if(!msg) {
-        printConsole(&CONST_STRING("got bad message"));
-        return;
-    }
-
-    /* log message */
-    if(code == 0) {
-        stringPattern(&CONST_STRING(":: %s\n"), (const void *[]){msg}, &print_str);
-        printConsole(&print_str);
-    }
-    /* warning message */
-    if(code > 0) {
-        stringPattern(&CONST_STRING(":? %s\n"), (const void *[]){msg}, &print_str);
-        printConsole(&print_str);
-    }
-    /* error message */
-    if(code < 0) {
-        stringPattern(&CONST_STRING(":! %s\n"), (const void *[]){msg}, &print_str);
-        errorConsole(&print_str);
-    }
-}
-
-#define STRUCTS_BUFFER_SIZE (4088)
-static struct {
-    u64 edge;
-    byte buffer[STRUCTS_BUFFER_SIZE];
-} s_structs_buffer;
-
-void *allocateStruct(
-    u64 size,
-    u64 alignment
-) {
-    u64 alloc_begin = ALIGN(s_structs_buffer.edge, alignment);
-    u64 alloc_end = alloc_begin + size;
-    /* not enough space */
-    if(alloc_end > STRUCTS_BUFFER_SIZE) {
-        MSG_WARNING(msgCallback, &TRACED_STR("structs buffer filled up"));
-        return NULL;
-    }
-    /* all good, shift edge and return begin address */
-    s_structs_buffer.edge = alloc_end;
-    return (void *)(s_structs_buffer.buffer + alloc_begin);
-}
-
-/* empty proc, because arena */
-void freeStruct(
-    void *allocation
-) {
-    if((u64)allocation > (u64)(s_structs_buffer.buffer + s_structs_buffer.edge)) {
-        MSG_WARNING(msgCallback, &TRACED_STR("trying to free structs buffer allocation, that is out of bounds already"));
-    }
-    s_structs_buffer.edge = ((u64)allocation - (u64)s_structs_buffer.buffer);
-    return;
-}
-
-static char s_strange_buffer[4096] = {0};
-
-i32 
-main(
-    i32 argc, 
-    char **argv
-) {
-    for(u32 i = 0; i < ARRAY_SIZE(s_strange_buffer); i++) {
-        s_strange_buffer[i] = i;
-    }
-
-    LoadInitFilesIn init_files_in = {
-        .dir_path = "./out/data",
-        .flags = RESOURCE_FILE_SHADERS
-    };
-    LoadInitFilesOut init_files_out = (LoadInitFilesOut){0};
-    if(!loadInitFiles(
-        &init_files_in, 
-        &init_files_out, 
-        msgCallback
-    )) {
-        MSG_ERROR(msgCallback, &TRACED_STR("failed to load init files"));
-        return -1;
-    }
-
-    /* gpu mount */
-    MountGPUIn mount_gpu_in = {
-        .flags = GPU_FLAG_DEBUG,
-        .window_name = "Scuby",
+    OpenWindowRenderIn open_window_in = {
+        .name     = "Scuby",
         .window_x = 800,
-        .window_y = 600,
-        .msg_callback = msgCallback
-    };
-    MountGPUOut mount_gpu_out = (MountGPUOut){0};
-    CreateGPUStaticResourcesIn create_static_resources_in = {
-        .program_count = 2,
-        .programs = (GPUProgramInfo[]) {
-            GPU_GRAPHICS_PROGRAM(SHADER_TRIANGLE, 0, init_files_out.shaders_address),
-            GPU_GRAPHICS_PROGRAM(SHADER_TRIANGLE, 0, init_files_out.shaders_address)
-        },
-        .uniform_buffer = (GPUBufferInfo[1]) {
-            (GPUBufferInfo) {.size = 64, .init_data = s_strange_buffer}
-        },
-        .mutable_storage_buffer_count = 1,
-        .storage_buffer_count = 2,
-        .storage_buffers = (GPUBufferInfo[]) {
-            (GPUBufferInfo) {.size = 1024, .init_data = s_strange_buffer},
-            (GPUBufferInfo) {.size = 2048, .init_data = s_strange_buffer}
-        }
-    };
-    CreateGPUStaticResourcesOut create_static_resources_out = (CreateGPUStaticResourcesOut){
-        .host_mutable_storage_buffers = (void *[2]){0}
+        .window_y = 600
     };
 
-    GPU *gpu = mountGPU(
-        &mount_gpu_in, 
-        &mount_gpu_out,
-        allocateStruct,
-        freeStruct
-    );
-    if(!gpu) {
-        MSG_ERROR(msgCallback, &TRACED_STR("failed to mount GPU"));
-    }
-    if(!createGPUStaticResources(
-        gpu,
-        &create_static_resources_in,
-        &create_static_resources_out
-    )) {
-        MSG_ERROR(msgCallback, &TRACED_STR("failed to create GPU static resources"));
+    CtxHandle render_handle = openRenderWindow(&open_window_in, &c_allocator);
+    if(render_handle == NULL) {
+        LOG_ERROR("failed to open render window");
+        goto fail;
     }
 
-    closeInitFiles();
+    if(!closeRenderWindow(render_handle, &c_allocator)) {
+        LOG_ERROR("failed to cloe render window");
+        goto fail;
+    }
 
-    destroyGPUStaticResources(gpu);
-    dismountGPU(gpu);
     return 0;
+
+    fail: {
+
+    }
 }
