@@ -12,7 +12,11 @@
 #ifdef _WIN32
     #include <windows.h>
 
+    #define strcat(dst, src, size) strcat_s(dst, (rsize_t)size, src)
     #define strcpy(dst, src, size) strcpy_s(dst, (rsize_t)size, src)
+#else
+    #define strcpy(dst, src, size) (strcpy)(dst, src)
+    #define strcat(dst, src, size) (strcat)(dst, src)
 #endif
 
 /* signed */
@@ -146,5 +150,6 @@ typedef void* CtxHandle;
         - checked every time you get ctx through CtxHandle (void*);                                       
     You can also use has to idetify structs in memory damp                                             */
 #define VULKAN_CTX_HASH (0x123981741)
+#define LOADER_CTX_HASH (0x215135324)
 
 #endif

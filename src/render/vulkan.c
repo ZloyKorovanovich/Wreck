@@ -781,7 +781,7 @@ static b32 createVulkanDevice(
    surface          = valid VkSurfaceKHR handle used by window and device
    swapchain        = valid pointer to VkSwapchainKHR handle memory, NULL if creating and old swapchain if recreating
    images           = valid pointer to array of VkImage handles */
-   ...
+
 static b32 createVulkanSwapchain(
     const AvailableDevice* available_device,
     WindowHandle           window,
@@ -973,11 +973,11 @@ static void destroyVulkanSwapchain(
     vkDestroySwapchainKHR(device, swapchain, NULL);
 }
 
-/* in        = valid pointer to OpenWindowRenderIn struct
+/* in        = valid pointer to OpenRenderWindowIn struct
    allocator = valid pointer to AllocationCallbacks struct, Ctx will be allocated with these functions 
    return    = valid pointer to VulkanCtx struct (success) / NULL (fail)                               */
 CtxHandle openRenderWindow(
-    const OpenWindowRenderIn* in, 
+    const OpenRenderWindowIn* in, 
     const AllocationCallbacks* allocator
 ) {
     VkPhysicalDeviceMemoryProperties    memory_properties       = (VkPhysicalDeviceMemoryProperties){0};
@@ -1397,7 +1397,6 @@ void (freeVram)(
     }
 }
 
-
 static VkPipeline createGraphicsPipeline(
     VkDevice           device,
     VkPipelineLayout   pipeline_layout,
@@ -1606,74 +1605,121 @@ static VkPipeline createGraphicsPipeline(
     return pipeline;
 }
 
-b32 createPipelines(
+static b32 createPipelines(
     VkDevice             device,
     VkPipelineLayout     pipeline_layout,
+    VkFormat             surface_format,
     const ShaderProgram* programs,
     VkPipeline*          pipelines,
     u32                  pipeline_count
 ) {
-    VkShaderModuleCreateInfo module_a_info = (VkShaderModuleCreateInfo){0};
-    VkShaderModuleCreateInfo module_b_info = (VkShaderModuleCreateInfo){0};
-    VkShaderModule           module_a      = NULL;
-    VkShaderModule           module_b      = NULL;
-    VkPipeline*              pipelines_end = pipelines + pipeline_count;
-    VkPipeline*              pipeline_i    = pipelines;
-    const ShaderProgram*     program_i     = programs;
-    u32                      id            = 0;
+    VkShaderModuleCreateInfo module_a_info                                  = (VkShaderModuleCreateInfo){0};
+    VkShaderModuleCreateInfo module_b_info                                  = (VkShaderModuleCreateInfo){0};
+    VkFormat                 color_attachments[MAX_RENDER_ATTACHMENT_COUNT] = {0};
+    VkFormat                 depth_attachment                               = 0;
+    u32                      color_attachment_count                         = 0;
+    const u32*               color_attachment_ids_end                       = NULL;
+    const u32*               color_attachment_id_j                          = NULL;
+    VkFormat*                color_attachment_j                             = NULL;
+    VkShaderModule           module_a                                       = NULL;
+    VkShaderModule           module_b                                       = NULL;
+    VkPipeline*              pipelines_end                                  = pipelines + pipeline_count;
+    VkPipeline*              pipeline_i                                     = pipelines;
+    const ShaderProgram*     program_i                                      = programs;
+    u32                      i                                              = 0;
+    u32                      j                                              = 0;
 
-    for(; pipeline_i != pipelines_end; pipeline_i++, program_i++) {
-        module_a    = NULL;
-        module_b    = NULL;
-        *pipeline_i = NULL;
 
+    for(; pipeline_i != pipelines_end; pipeline_i++, program_i++, i++) {
         if(program_i->type == SHADER_PROGRAM_TYPE_GRAPHICS) {
-            /* create module_a vertex shader module_b fragment shader */
+            /* load color attachments if needed */
+            if(
+                color_attachment_count   != program_i->color_attachment_count                                   ||
+                color_attachment_ids_end != program_i->color_attachment_ids + program_i->color_attachment_count
+            ) {
+                color_attachment_count   = program_i->color_attachment_count;
+                color_attachment_ids_end = program_i->color_attachment_ids + program_i->color_attachment_count;
+                color_attachment_id_j    = program_i->color_attachment_ids;
+                color_attachment_j       = color_attachments;
+                for(; color_attachment_id_j != color_attachment_ids_end; color_attachment_id_j++, color_attachment_j++) {
+                    if(*color_attachment_id_j == IMAGE_SURFACE_COLOR_ID) {
+                        *color_attachment_j = surface_format;
+                        continue;
+                    }
+                    
+                    LOG_ERROR(
+                        "invalid color attachment shader id: %u/%u attachment id: %u/%u", 
+                        i, pipeline_count, j, color_attachment_count
+                    );
+                    goto fail;
+                }
+            }
+            /* load depth attachment */
+            switch (program_i->depth_attachment_id) {
+                case U32_MAX: {
+                    depth_attachment = VK_FORMAT_UNDEFINED;
+                    break;
+                }
+                case IMAGE_SCREEN_DEPTH_ID: {
+                    depth_attachment = VK_FORMAT_D32_SFLOAT;
+                    break;
+                }
+
+                default: {
+                    LOG_ERROR("invalid shader depth attachment id: %u/%u", i, pipeline_count);
+                    goto fail;
+                }
+            }
+
+            /* fill module infos */
             module_a_info = (VkShaderModuleCreateInfo) {
                 .sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                 .pCode    = program_i->vertex,
-                .codeSize = program_i->vertex_size 
+                .codeSize = program_i->vertex_size
             };
             module_b_info = (VkShaderModuleCreateInfo) {
                 .sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                 .pCode    = program_i->fragment,
-                .codeSize = program_i->fragment_size 
+                .codeSize = program_i->fragment_size
             };
-
+            
+            /* create modules */
             if(vkCreateShaderModule(
-                device,
+                device, 
                 &module_a_info,
                 NULL,
                 &module_a
             ) != VK_SUCCESS) {
-                LOG_ERROR("failed to create vertex shader module id: %u/%u", id, pipeline_count);
+                LOG_ERROR("failed to create vertex shader module id: %u/%u", i, pipeline_count);
                 goto fail;
             }
             if(vkCreateShaderModule(
-                device,
+                device, 
                 &module_b_info,
                 NULL,
                 &module_b
             ) != VK_SUCCESS) {
-                LOG_ERROR("failed to create fragment shader module id: %u/%u", id, pipeline_count);
+                LOG_ERROR("failed to create fragment shader module id: %u/%u", i, pipeline_count);
                 goto fail;
             }
 
+            /* create pipeline */
             *pipeline_i = createGraphicsPipeline(
                 device,
                 pipeline_layout,
                 module_a,
                 module_b,
-                ,
-                ,
-                ,
+                color_attachments,
+                depth_attachment,
+                color_attachment_count,
                 program_i->flags
             );
             if(*pipeline_i == NULL) {
-                LOG_ERROR("failed to create graphics pipeline id: %u/%u", id, pipeline_count);
+                LOG_ERROR("failed to create graphics pipeline id: %u/%u", i, pipeline_count);
                 goto fail;
             }
-            
+
+            /* detsroy not needed modules */
             vkDestroyShaderModule(device, module_a, NULL);
             vkDestroyShaderModule(device, module_b, NULL);
             module_a = NULL;
@@ -1681,8 +1727,8 @@ b32 createPipelines(
 
             continue;
         }
-        
-        LOG_ERROR("undetected shader program type");
+
+        LOG_ERROR("invalid shader program type id: %u/%u", i, pipeline_count);
         goto fail;
     }
 
@@ -1695,10 +1741,8 @@ b32 createPipelines(
         if(module_b != NULL) {
             vkDestroyShaderModule(device, module_b, NULL);
         }
-        for(; pipeline_i != pipelines - 1; pipeline_i--) {
-            if(*pipeline_i != NULL) {
-                vkDestroyPipeline(device, *pipeline_i, NULL);
-            }
+        for(; (u64)pipeline_i != (u64)pipelines - 1; pipeline_i--) {
+            vkDestroyPipeline(device, *pipeline_i, NULL);
         }
         return FALSE;
     }
@@ -1709,10 +1753,13 @@ b32 loadShaderPrograms(
     const LoadShaderProgramsIn* in, 
     const AllocationCallbacks*  allocator
 ) {
-    VulkanCtx*     vk_ctx     = (VulkanCtx*)ctx;
-    VulkanShaders* vk_shaders = NULL;
+    VulkanCtx*                 vk_ctx               = (VulkanCtx*)ctx;
+    VkPipelineLayoutCreateInfo pipeline_layout_info = (VkPipelineLayoutCreateInfo){0};
+    VulkanShaders*             vk_shaders           = NULL;
+    VkPipeline*                pipelines_end        = NULL;
+    VkPipeline*                pipeline_i           = NULL;
 
-    if(ctx == NULL || in == NULL || allocator == NULL) {
+    if(ctx == NULL || allocator == NULL) {
         LOG_ERROR("ivalid input params");
         goto fail;
     }
@@ -1720,8 +1767,70 @@ b32 loadShaderPrograms(
         LOG_ERROR("vulkan ctx hash invalid");
         goto fail;
     }
-
+    /* get shaders address */
     vk_shaders = &vk_ctx->shaders;
+
+    /* detsroy old data */
+    if(vk_shaders->pipeline_count != 0) {
+        pipelines_end = vk_shaders->pipelines + vk_shaders->pipeline_count;
+        pipeline_i    = vk_shaders->pipelines;
+        for(; pipeline_i != pipelines_end; pipeline_i++) {
+            vkDestroyPipeline(vk_ctx->device, *pipeline_i, NULL);
+        }
+
+        release(allocator, vk_shaders->pipelines);
+        vkDestroyPipelineLayout(vk_ctx->device, vk_shaders->pipeline_layout, NULL);
+        LOG_MESSAGE("destroyed old vulkan pipelines count: %u", vk_shaders->pipeline_count);
+
+        *vk_shaders = (VulkanShaders){0};
+    }
+
+    /* if no programs are created its destruction call only */
+    if(in != NULL && in->program_count != 0) {
+        /* create pipeline layout */
+        pipeline_layout_info = (VkPipelineLayoutCreateInfo) {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO
+        };
+        if(vkCreatePipelineLayout(
+            vk_ctx->device,
+            &pipeline_layout_info,
+            NULL,
+            &vk_shaders->pipeline_layout
+        ) != VK_SUCCESS) {
+            LOG_ERROR("failed to create vulkan pipeline layout");
+            goto fail;
+        }
+
+        /* allocate pipelines array */
+        vk_shaders->pipelines = allocate(allocator, sizeof(VkPipeline) * in->program_count);
+        if(vk_shaders->pipelines == NULL) {
+            LOG_ERROR("failed to allocate vulkan pipelines array");
+            goto fail;
+        }
+        /* zero initialization is required for safe usage of createPipelines */
+        pipelines_end = vk_shaders->pipelines + in->program_count;
+        pipeline_i    = vk_shaders->pipelines;
+        for(; pipeline_i != pipelines_end; pipeline_i++) {
+            *pipeline_i = NULL;
+        }
+        /* create pipelines */
+        if(!createPipelines(
+            vk_ctx->device,
+            vk_shaders->pipeline_layout,
+            vk_ctx->available_devices[vk_ctx->current_device_id].surface_color_format,
+            in->programs,
+            vk_shaders->pipelines,
+            in->program_count
+        )) {
+            LOG_ERROR("failed to create vulkan pipelines");
+            goto fail;
+        }
+        vk_shaders->pipeline_count = in->program_count;
+
+        LOG_MESSAGE("created vulkan pipelines count: %u", vk_shaders->pipeline_count);
+    }
+
+    return TRUE;
 
     fail: {
         return FALSE;

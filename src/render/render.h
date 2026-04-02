@@ -39,15 +39,24 @@ typedef enum {
     SHADER_PROGRAM_TYPE_COMPUTE  = 2
 } ShaderProgramType;
 
+#define IMAGE_SURFACE_COLOR_ID (0xfffffffe)
+#define IMAGE_SCREEN_COLOR_ID  (0xfffffffd)
+#define IMAGE_SCREEN_DEPTH_ID  (0xfffffffc)
+
+#define MAX_RENDER_ATTACHMENT_COUNT (8)
+
 typedef struct {
     ShaderProgramType  type;
     ShaderProgramFlags flags;
     union {
         struct {
-            void* vertex;
-            void* fragment;
-            u32   vertex_size;
-            u32   fragment_size;
+            void*      vertex;
+            void*      fragment;
+            u32        vertex_size;
+            u32        fragment_size;
+            const u32* color_attachment_ids;
+            u32        depth_attachment_id;
+            u32        color_attachment_count;
         };
         struct {
             void* compute;
@@ -60,14 +69,14 @@ typedef struct {
     const char* name;
     u32         window_x;
     u32         window_y;
-} OpenWindowRenderIn;
+} OpenRenderWindowIn;
 
 typedef struct {
     const ShaderProgram* programs;
     u32                  program_count;
 } LoadShaderProgramsIn;
 
-CtxHandle openRenderWindow(const OpenWindowRenderIn* in, const AllocationCallbacks* allocator);
+CtxHandle openRenderWindow(const OpenRenderWindowIn* in, const AllocationCallbacks* allocator);
 b32 closeRenderWindow(CtxHandle ctx, const AllocationCallbacks* allocator);
 b32 loadShaderPrograms(CtxHandle ctx, const LoadShaderProgramsIn* in, const AllocationCallbacks* allocator);
 
