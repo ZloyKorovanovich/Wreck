@@ -39,11 +39,26 @@ typedef enum {
     SHADER_PROGRAM_TYPE_COMPUTE  = 2
 } ShaderProgramType;
 
+typedef enum {
+    RENDER_FORMAT_NONE                = 0,
+    RENDER_FORMAT_R32G32B32A32_SFLOAT = 1
+} RenderFormat;
+
+typedef enum {
+    RENDER_BINDING_TYPE_NONE             = 0,
+    RENDER_BINDING_TYPE_STORAGE_IMAGE    = 1,
+    RENDER_BINDING_TYPE_COLOR_ATTACHMENT = 2,
+    RENDER_BINDING_TYPE_DEPTH_ATTACHMENT = 3,
+    RENDER_BINDING_TYPE_UNIFORM_BUFFER   = 4,
+    RENDER_BINDING_TYPE_STORAGE_BUFFER   = 5
+} RenderBindingType;
+
 #define IMAGE_SURFACE_COLOR_ID (0xfffffffe)
 #define IMAGE_SCREEN_COLOR_ID  (0xfffffffd)
 #define IMAGE_SCREEN_DEPTH_ID  (0xfffffffc)
 
 #define MAX_RENDER_ATTACHMENT_COUNT (8)
+
 
 typedef struct {
     ShaderProgramType  type;
@@ -66,6 +81,24 @@ typedef struct {
 } ShaderProgram;
 
 typedef struct {
+    RenderBindingType type;
+    union {
+        struct {
+            RenderFormat image_format;
+            u32          image_x;
+            u32          image_y;
+            u32          image_z;
+            u32          image_sampled_id;
+            u32          image_storage_id;
+        };
+        struct {
+            u32 buffer_id;
+            u64 buffer_size;
+        };
+    };
+} RenderBinding;
+
+typedef struct {
     const char* name;
     u32         window_x;
     u32         window_y;
@@ -76,8 +109,14 @@ typedef struct {
     u32                  program_count;
 } LoadShaderProgramsIn;
 
-CtxHandle openRenderWindow(const OpenRenderWindowIn* in, const AllocationCallbacks* allocator);
-b32 closeRenderWindow(CtxHandle ctx, const AllocationCallbacks* allocator);
-b32 loadShaderPrograms(CtxHandle ctx, const LoadShaderProgramsIn* in, const AllocationCallbacks* allocator);
+typedef struct {
+    const RenderBinding* bindings;
+    u32                  binding_count;
+} LayoutRenderBindingsIn;
+
+CtxHandle openRenderWindow(const OpenRenderWindowIn* in, void* page_address);
+b32 closeRenderWindow(CtxHandle ctx);
+b32 loadShaderPrograms(CtxHandle ctx, const LoadShaderProgramsIn* in);
+b32 layoutRenderBindings(CtxHandle ctx, const LayoutRenderBindingsIn* in);
 
 #endif

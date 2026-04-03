@@ -973,12 +973,12 @@ static void destroyVulkanSwapchain(
     vkDestroySwapchainKHR(device, swapchain, NULL);
 }
 
-/* in        = valid pointer to OpenRenderWindowIn struct
-   allocator = valid pointer to AllocationCallbacks struct, Ctx will be allocated with these functions 
-   return    = valid pointer to VulkanCtx struct (success) / NULL (fail)                               */
+/* in           = valid pointer to OpenRenderWindowIn struct
+   page_address = valid pointer to 4096 memory space that will be used for storing VulkanCtx
+   return       = valid pointer to VulkanCtx struct (success) / NULL (fail)                               */
 CtxHandle openRenderWindow(
     const OpenRenderWindowIn* in, 
-    const AllocationCallbacks* allocator
+    void*                     page_address
 ) {
     VkPhysicalDeviceMemoryProperties    memory_properties       = (VkPhysicalDeviceMemoryProperties){0};
     const char*                         app_name                = NULL;
@@ -988,18 +988,15 @@ CtxHandle openRenderWindow(
     PFN_vkDestroyDebugUtilsMessengerEXT destroy_debug_messenger = NULL;
     u32                                 id                      = 0;
 
-    if(in == NULL || allocator == NULL) {
+    if(in == NULL || page_address == NULL) {
         LOG_ERROR("render open window invalid params");
         goto fail;
     }
 
     app_name = (in->name == NULL) ? " " : in->name;
-    vk_ctx   = allocate(allocator, sizeof(VulkanCtx));
-    if(vk_ctx == NULL) {
-        LOG_ERROR("failed to allocate vulkan context");
-        goto fail;
-    }
-    *vk_ctx = (VulkanCtx) {
+    vk_ctx   = page_address;
+
+    *vk_ctx  = (VulkanCtx) {
         .ctx_hash = VULKAN_CTX_HASH,
         .app_name = app_name
     };
@@ -1125,24 +1122,21 @@ CtxHandle openRenderWindow(
             }
 
             *vk_ctx = (VulkanCtx){0};
-            release(allocator, vk_ctx);
         }
         return NULL;
     }
 }
 
-/* ctx       = valid CtxHandle (address of VulkanCtx struct)
-   allocator = valid pointer to AllocationCallbacks struct used for managing context's memory */
+/* ctx = valid CtxHandle (address of VulkanCtx struct) */
 b32 closeRenderWindow(
-    CtxHandle                  ctx,
-    const AllocationCallbacks* allocator
+    CtxHandle ctx
 ) {
     VulkanCtx*                          vk_ctx                  = NULL;
     PFN_vkDestroyDebugUtilsMessengerEXT destroy_debug_messenger = NULL;
     MutexResult                         wait_result             = 0;
     
     /* validation */
-    if(ctx == NULL || allocator == NULL) {
+    if(ctx == NULL) {
         LOG_ERROR("ctx or(and) allocator is(are) NULL");
         goto fail;
     }
@@ -1152,6 +1146,8 @@ b32 closeRenderWindow(
         LOG_ERROR("trying to destroy VulkanCtx with invalid hash");
         goto fail;
     }
+
+    loadShaderPrograms(ctx, NULL);
 
     /* destroy mutex */
     wait_result = waitForMutex(vk_ctx->memory_mutex, 4096);
@@ -1199,7 +1195,6 @@ b32 closeRenderWindow(
 
     /* memory free */
     *vk_ctx = (VulkanCtx){0};
-    release(allocator, vk_ctx);
 
     return TRUE;
 
@@ -1750,8 +1745,7 @@ static b32 createPipelines(
 
 b32 loadShaderPrograms(
     CtxHandle                   ctx, 
-    const LoadShaderProgramsIn* in, 
-    const AllocationCallbacks*  allocator
+    const LoadShaderProgramsIn* in
 ) {
     VulkanCtx*                 vk_ctx               = (VulkanCtx*)ctx;
     VkPipelineLayoutCreateInfo pipeline_layout_info = (VkPipelineLayoutCreateInfo){0};
@@ -1759,7 +1753,7 @@ b32 loadShaderPrograms(
     VkPipeline*                pipelines_end        = NULL;
     VkPipeline*                pipeline_i           = NULL;
 
-    if(ctx == NULL || allocator == NULL) {
+    if(ctx == NULL) {
         LOG_ERROR("ivalid input params");
         goto fail;
     }
@@ -1778,7 +1772,7 @@ b32 loadShaderPrograms(
             vkDestroyPipeline(vk_ctx->device, *pipeline_i, NULL);
         }
 
-        release(allocator, vk_shaders->pipelines);
+        free(vk_shaders->pipelines);
         vkDestroyPipelineLayout(vk_ctx->device, vk_shaders->pipeline_layout, NULL);
         LOG_MESSAGE("destroyed old vulkan pipelines count: %u", vk_shaders->pipeline_count);
 
@@ -1802,7 +1796,7 @@ b32 loadShaderPrograms(
         }
 
         /* allocate pipelines array */
-        vk_shaders->pipelines = allocate(allocator, sizeof(VkPipeline) * in->program_count);
+        vk_shaders->pipelines = malloc(sizeof(VkPipeline) * in->program_count);
         if(vk_shaders->pipelines == NULL) {
             LOG_ERROR("failed to allocate vulkan pipelines array");
             goto fail;
@@ -1833,6 +1827,272 @@ b32 loadShaderPrograms(
     return TRUE;
 
     fail: {
+        if(vk_shaders) {
+            if(vk_shaders->pipeline_layout != NULL) {
+                vkDestroyPipelineLayout(vk_ctx->device, vk_shaders->pipeline_layout, NULL);
+            }
+            *vk_shaders = (VulkanShaders){0};
+        }
+        return FALSE;
+    }
+}
+
+
+const VkDescriptorPoolSize c_descriptor_pool_sizes[] = {
+    (VkDescriptorPoolSize) {
+        .type            = VK_DESCRIPTOR_TYPE_SAMPLER,
+        .descriptorCount = 4
+    },
+    (VkDescriptorPoolSize) {
+        .type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = MAX_BINDINGS_PER_DESCRIPTOR
+    },
+    (VkDescriptorPoolSize) {
+        .type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .descriptorCount = MAX_BINDINGS_PER_DESCRIPTOR
+    },
+    (VkDescriptorPoolSize) {
+        .type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        .descriptorCount = MAX_BINDINGS_PER_DESCRIPTOR
+    },
+    (VkDescriptorPoolSize) {
+        .type            = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+        .descriptorCount = MAX_BINDINGS_PER_DESCRIPTOR * 2
+    }
+};
+
+VkDescriptorSetLayoutBinding c_set_0_bindings[] = (VkDescriptorSetLayoutBinding) {
+    (VkDescriptorSetLayoutBinding) {
+        .binding         = 0,
+        .stageFlags      = VK_SHADER_STAGE_ALL,
+        .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER,
+        .descriptorCount = 1
+    },
+    (VkDescriptorSetLayoutBinding) {
+        .binding         = 1,
+        .stageFlags      = VK_SHADER_STAGE_ALL,
+        .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER,
+        .descriptorCount = 1
+    },
+    (VkDescriptorSetLayoutBinding) {
+        .binding         = 2,
+        .stageFlags      = VK_SHADER_STAGE_ALL,
+        .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER,
+        .descriptorCount = 1
+    },
+    (VkDescriptorSetLayoutBinding) {
+        .binding         = 3,
+        .stageFlags      = VK_SHADER_STAGE_ALL,
+        .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER,
+        .descriptorCount = 1
+    }
+};
+
+VkDescriptorSetLayoutBinding c_set_1_bindings_default[] = (VkDescriptorSetLayoutBinding) {
+    (VkDescriptorSetLayoutBinding) {
+        .binding         = 0,
+        .stageFlags      = VK_SHADER_STAGE_ALL,
+        .descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .descriptorCount = 1
+    }
+};
+
+VkDescriptorSetLayoutBinding c_set_2_bindings[] = (VkDescriptorSetLayoutBinding) {
+    (VkDescriptorSetLayoutBinding) {
+        .binding         = 0,
+        .stageFlags      = VK_SHADER_STAGE_ALL,
+        .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+        .descriptorCount = 1
+    },
+    (VkDescriptorSetLayoutBinding) {
+        .binding         = 1,
+        .stageFlags      = VK_SHADER_STAGE_ALL,
+        .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+        .descriptorCount = 1
+    },
+    (VkDescriptorSetLayoutBinding) {
+        .binding         = 2,
+        .stageFlags      = VK_SHADER_STAGE_ALL,
+        .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+        .descriptorCount = 1
+    },
+    (VkDescriptorSetLayoutBinding) {
+        .binding         = 3,
+        .stageFlags      = VK_SHADER_STAGE_ALL,
+        .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+        .descriptorCount = 1
+    },
+    (VkDescriptorSetLayoutBinding) {
+        .binding         = 4,
+        .stageFlags      = VK_SHADER_STAGE_ALL,
+        .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+        .descriptorCount = 1
+    }
+};
+
+... createResources also first decide how they are stored
+
+b32 createDescriptorSets(
+    VkDevice                              device,
+    VkDescriptorPool                      pool,
+    const VkDescriptorSetLayoutBinding*   set_1_bindings,
+    u32                                   set_1_binding_count,
+    VkDescriptorSetLayout*                set_layouts,
+    VkDescriptorSet*                      sets,
+    u32                                   set_count
+) {
+    VkDescriptorSetLayoutCreateInfo layout_info = (VkDescriptorSetLayoutCreateInfo){0};
+    VkDescriptorSetAllocateInfo     set_info    = (VkDescriptorSetAllocateInfo){0};
+
+    /* create layout 0 */
+    layout_info = (VkDescriptorSetLayoutCreateInfo) {
+        .sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = ARRAY_SIZE(c_set_0_bindings),
+        .pBindings    = c_set_0_bindings
+    };
+    if(vkCreateDescriptorSetLayout(
+        device,
+        &layout_info,
+        NULL,
+        &set_layouts[0]
+    ) != VK_SUCCESS) {
+        LOG_ERROR("failed to create descriptor set layout 0");
+        goto fail;
+    }
+
+    /* create layout 1 */
+    layout_info = (VkDescriptorSetLayoutCreateInfo) {
+        .sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = (set_1_binding_count == 0) ? ARRAY_SIZE(c_set_1_bindings_default) : set_1_binding_count,
+        .pBindings    = (set_1_binding_count == 0) ? c_set_1_bindings_default             : set_1_bindings
+    };
+    if(vkCreateDescriptorSetLayout(
+        device,
+        &layout_info,
+        NULL,
+        &set_layouts[1]
+    ) != VK_SUCCESS) {
+        LOG_ERROR("failed to create descriptor set layout 1");
+        goto fail;
+    }
+
+    /* create layout 2 */
+    layout_info = (VkDescriptorSetLayoutCreateInfo) {
+        .sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = ARRAY_SIZE(c_set_2_bindings),
+        .pBindings    = c_set_2_bindings
+    };
+    if(vkCreateDescriptorSetLayout(
+        device,
+        &layout_info,
+        NULL,
+        &set_layouts[2]
+    ) != VK_SUCCESS) {
+        LOG_ERROR("failed to create descriptor set layout 2");
+        goto fail;
+    }
+
+    /* allocate sets */
+    set_info = (VkDescriptorSetAllocateInfo) {
+        .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool     = pool,
+        .descriptorSetCount = MAX_DESCRIPTOR_SET_COUNT,
+        .pSetLayouts        = set_layouts
+    };
+    if(vkAllocateDescriptorSets(
+        device,
+        &set_info,
+        sets
+    ) != VK_SUCCESS) {
+        LOG_ERROR("failed to allocate descriptor sets");
+        goto fail;
+    }
+
+    return TRUE;
+
+    fail: {
+        if(set_layouts[0] != NULL) {
+            vkDestroyDescriptorSetLayout(device, set_layouts[0], NULL);
+        }
+        if(set_layouts[1] != NULL) {
+            vkDestroyDescriptorSetLayout(device, set_layouts[1], NULL);
+        }
+        if(set_layouts[2] != NULL) {
+            vkDestroyDescriptorSetLayout(device, set_layouts[2], NULL);
+        }
+
+        set_layouts[0] = NULL;
+        set_layouts[1] = NULL;
+        set_layouts[2] = NULL;
+        sets       [0] = NULL;
+        sets       [1] = NULL;
+        sets       [2] = NULL;
+
+        return FALSE;
+    }
+}
+
+b32 layoutRenderBindings(
+    CtxHandle                     ctx, 
+    const LayoutRenderBindingsIn* in
+) {
+    VkDescriptorSetLayoutBindingFlagsCreateInfo custom_bindings[MAX_BINDINGS_PER_DESCRIPTOR] = {0}; 
+    VkDescriptorPoolCreateInfo                  descriptor_pool_info                         = (VkDescriptorPoolCreateInfo){0};
+    VulkanCtx*                                  vk_ctx                                       = (VulkanCtx*)ctx;
+    VulkanBindings*                             vk_bindings                                  = NULL;
+
+    if(ctx == NULL) {
+        LOG_ERROR("ivalid input params");
+        goto fail;
+    }
+    if(vk_ctx->ctx_hash != VULKAN_CTX_HASH) {
+        LOG_ERROR("vulkan ctx hash invalid");
+        goto fail;
+    }
+
+    vk_bindings = &vk_ctx->bindings;
+    
+    /* destroy old bindings */
+    if(vk_bindings->descriptor_pool != NULL) {
+        vkFreeDescriptorSets(vk_ctx->device, vk_bindings->descriptor_pool, 3, vk_bindings->sets);
+        vkDestroyDescriptorSetLayout(vk_ctx->device, vk_bindings->set_layouts[0], NULL);
+        vkDestroyDescriptorSetLayout(vk_ctx->device, vk_bindings->set_layouts[1], NULL);
+        vkDestroyDescriptorSetLayout(vk_ctx->device, vk_bindings->set_layouts[2], NULL);
+        vkDestroyDescriptorPool(vk_ctx->device, vk_bindings->descriptor_pool, NULL);
+    }
+    *vk_bindings = (VulkanBindings){0};
+
+    /* create descriptor pool */
+    descriptor_pool_info = (VkDescriptorPoolCreateInfo) {
+        .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .maxSets       = MAX_DESCRIPTOR_SET_COUNT,
+        .poolSizeCount = ARRAY_SIZE(c_descriptor_pool_sizes),
+        .pPoolSizes    = c_descriptor_pool_sizes
+    };
+    if(vkCreateDescriptorPool(
+        vk_ctx->device,
+        &descriptor_pool_info, 
+        NULL,
+        &vk_bindings->descriptor_pool
+    ) != VK_SUCCESS) {
+        LOG_ERROR("failed to create vulkan descriptor pool");
+        goto fail;
+    }
+
+    /* create resources */
+
+    /* create descriptors */
+
+
+    return TRUE;
+
+    fail: {
+        if(vk_bindings) {
+            if(vk_bindings->descriptor_pool != NULL) {
+                vkDestroyDescriptorPool(vk_ctx->device, vk_bindings->descriptor_pool, NULL);
+            }
+            *vk_bindings = (VulkanBindings){0};
+        }
         return FALSE;
     }
 }

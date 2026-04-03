@@ -16,6 +16,9 @@
 #define MAX_SCAN_SURFACE_FORMATS        (256)
 #define MAX_SWAPCHAIN_IMAGES            (32)
 
+#define MAX_DESCRIPTOR_SET_COUNT        (3)
+#define MAX_BINDINGS_PER_DESCRIPTOR     (16)
+
 typedef struct {
     VkDeviceMemory device_memory;
     u64            size;
@@ -58,6 +61,12 @@ typedef struct {
 } VulkanShaders;
 
 typedef struct {
+    VkDescriptorPool      descriptor_pool;
+    VkDescriptorSetLayout set_layouts   [MAX_DESCRIPTOR_SET_COUNT];
+    VkDescriptorSet       sets          [MAX_DESCRIPTOR_SET_COUNT];
+} VulkanBindings;
+
+typedef struct {
     u64                      ctx_hash;
     const char*              app_name;
     WindowHandle             window;
@@ -83,6 +92,7 @@ typedef struct {
     u32                      memory_type_count;
     /* resources */
     VulkanShaders            shaders;
+    VulkanBindings           bindings;
     /* backup */
     u32                      current_device_id;
     u32                      available_device_count;

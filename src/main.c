@@ -1,16 +1,12 @@
 #include "base.h"
 #include "render/render.h"
 
-const AllocationCallbacks c_allocator = (AllocationCallbacks) {
-    .allocate = (malloc),
-    .release  = (free)   
-};
-
-
 static u8  vertex_shader  [4096] = {0};
 static u8  fragment_shader[4096] = {0};
 static u64 vertex_shader_size    = 0;
 static u64 fragment_shader_size  = 0;
+
+static u8  ctx_buffer[4096]      = {0};
 
 i32 main(
     i32    argc,
@@ -60,29 +56,22 @@ i32 main(
         }
     };
 
-    render_handle = openRenderWindow(&open_window_in, &c_allocator);
+    render_handle = openRenderWindow(
+        &open_window_in, 
+        ctx_buffer
+    );
     if(render_handle == NULL) {
         LOG_ERROR("failed to open render window");
         goto fail;
     }
     if(!loadShaderPrograms(
         render_handle, 
-        &load_shaders_in, 
-        &c_allocator
+        &load_shaders_in
     )) {
         LOG_ERROR("failed to load shader programs");
         goto fail;
     }
-
-    if(!loadShaderPrograms(
-        render_handle, 
-        NULL,
-        &c_allocator
-    )) {
-        LOG_ERROR("failed to unload shader programs");
-        goto fail;
-    }
-    if(!closeRenderWindow(render_handle, &c_allocator)) {
+    if(!closeRenderWindow(render_handle)) {
         LOG_ERROR("failed to close render window");
         goto fail;
     }

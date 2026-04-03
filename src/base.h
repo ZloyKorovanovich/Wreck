@@ -110,11 +110,6 @@ typedef enum {
     }
 #endif
 
-typedef struct {
-    void* (*allocate) (size_t size);
-    void  (*release)  (void* address);
-} AllocationCallbacks;
-
 /* simple log */
 #ifdef DEBUG_LOG
     #define DEBUG_TRACE                 " *** " __FILE__ ":" TOSTRING(__LINE__)
@@ -122,22 +117,12 @@ typedef struct {
     #define LOG_ERROR(log, ...)         printf(":! " log DEBUG_TRACE "\r\n", __VA_ARGS__)
     #define LOG_WARNING(log, ...)       printf(":? " log DEBUG_TRACE "\r\n", __VA_ARGS__)
     #define LOG_MESSAGE_TRACE(log, ...) printf(":: " log DEBUG_TRACE "\r\n", __VA_ARGS__)
-
-    #define malloc(size)                ({void* __ptr = (malloc)(size);              printf(":* malloc size: %llu address: %p"                 DEBUG_TRACE "\r\n", (u64)size, __ptr); __ptr;})
-    #define realloc(address, size)      ({void* __ptr = (realloc)(address, size);    printf(":* realloc size: %llu src: %p dst: %p"            DEBUG_TRACE "\r\n", (u64)size, address, __ptr); __ptr;})
-    #define free(address)               ({(free)(address);                           printf(":* free address: %p"                              DEBUG_TRACE "\r\n", address);})
-
-    #define allocate(allocator, size)   ({void* __ptr = (allocator->allocate)(size); printf(":* allocate size: %llu address: %p allocator: %p" DEBUG_TRACE "\r\n", (u64)size, __ptr, allocator); __ptr;})
-    #define release(allocator, address) ({(allocator->release)(address);             printf(":* release address: %p allocator: %p"             DEBUG_TRACE "\r\n", address, allocator);})
 #else
     #define DEBUG_TRACE
     #define LOG_MESSAGE(log, ...)       ;
     #define LOG_ERROR(log, ...)         ;
     #define LOG_WARNING(log, ...)       ;
     #define LOG_MESSAGE_TRACE(log, ...) ;
-
-    #define allocate(allocator, size)   (allocator->allocate)(size)
-    #define release(allocator, address) (allocator->release)(address)
 #endif
 
 typedef void* CtxHandle;
@@ -151,5 +136,8 @@ typedef void* CtxHandle;
     You can also use has to idetify structs in memory damp                                             */
 #define VULKAN_CTX_HASH (0x123981741)
 #define LOADER_CTX_HASH (0x215135324)
+
+#define VULKAN_CTX_SIZE (4096)
+#define LOADER_CTX_SIZE (4096)
 
 #endif
