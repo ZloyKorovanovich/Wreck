@@ -45,20 +45,27 @@ typedef enum {
 } RenderFormat;
 
 typedef enum {
-    RENDER_BINDING_TYPE_NONE             = 0,
-    RENDER_BINDING_TYPE_STORAGE_IMAGE    = 1,
-    RENDER_BINDING_TYPE_COLOR_ATTACHMENT = 2,
-    RENDER_BINDING_TYPE_DEPTH_ATTACHMENT = 3,
-    RENDER_BINDING_TYPE_UNIFORM_BUFFER   = 4,
-    RENDER_BINDING_TYPE_STORAGE_BUFFER   = 5
-} RenderBindingType;
+    RENDER_RESOURCE_TYPE_NONE             = 0,
+    RENDER_RESOURCE_TYPE_COLOR_ATTACHMENT = 1,
+    RENDER_RESOURCE_TYPE_DEPTH_ATTACHMENT = 2,
+    RENDER_RESOURCE_TYPE_GENRIC_IMAGE     = 3,
+
+    RENDER_RESOURCE_TYPE_UNIFORM_BUFFER   = 4,
+    RENDER_RESOURCE_TYPE_STORAGE_BUFFER   = 5
+} RenderResourceType;
+
+typedef enum {
+    RENDER_RESOURCE_FLAGS_NONE          = 0x0,
+    RENDER_RESOURCE_FLAG_RENDER_QUEUE   = 0x1,
+    RENDER_RESOURCE_FLAG_COMPUTE_QUEUE  = 0x2,
+    RENDER_RESOURCE_FLAG_TRANSFER_QUEUE = 0x4
+} RenderResourceFlags;
 
 #define IMAGE_SURFACE_COLOR_ID (0xfffffffe)
 #define IMAGE_SCREEN_COLOR_ID  (0xfffffffd)
 #define IMAGE_SCREEN_DEPTH_ID  (0xfffffffc)
 
 #define MAX_RENDER_ATTACHMENT_COUNT (8)
-
 
 typedef struct {
     ShaderProgramType  type;
@@ -81,22 +88,22 @@ typedef struct {
 } ShaderProgram;
 
 typedef struct {
-    RenderBindingType type;
-    union {
-        struct {
-            RenderFormat image_format;
-            u32          image_x;
-            u32          image_y;
-            u32          image_z;
-            u32          image_sampled_id;
-            u32          image_storage_id;
-        };
-        struct {
-            u32 buffer_id;
-            u64 buffer_size;
-        };
-    };
-} RenderBinding;
+    RenderResourceType  type;
+    RenderFormat        format;
+    RenderResourceFlags flags;
+    u32                 x;
+    u32                 y;
+    u32                 z;
+    u32                 mip_levels;
+    u32                 sampled_binding;
+    u32                 storage_binding;
+} RenderImage;
+
+typedef struct {
+    RenderResourceType  type;
+    RenderResourceFlags flags;
+    u64                 size;
+} RenderBuffer;
 
 typedef struct {
     const char* name;
@@ -110,8 +117,10 @@ typedef struct {
 } LoadShaderProgramsIn;
 
 typedef struct {
-    const RenderBinding* bindings;
-    u32                  binding_count;
+    const RenderImage*  images;
+    const RenderBuffer* buffers;
+    u32                 image_count;
+    u32                 buffer_count;
 } LayoutRenderBindingsIn;
 
 CtxHandle openRenderWindow(const OpenRenderWindowIn* in, void* page_address);

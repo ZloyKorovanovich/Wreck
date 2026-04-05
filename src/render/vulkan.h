@@ -62,8 +62,13 @@ typedef struct {
 
 typedef struct {
     VkDescriptorPool      descriptor_pool;
-    VkDescriptorSetLayout set_layouts   [MAX_DESCRIPTOR_SET_COUNT];
-    VkDescriptorSet       sets          [MAX_DESCRIPTOR_SET_COUNT];
+    VkDescriptorSetLayout set_layouts    [MAX_DESCRIPTOR_SET_COUNT];
+    VkDescriptorSet       sets           [MAX_DESCRIPTOR_SET_COUNT];
+    VkImage*              images;
+    VkBuffer*             buffers;
+    VkBuffer              transfer_buffer; /* optional, not always exists */
+    u32                   image_count;
+    u32                   buffer_count;
 } VulkanBindings;
 
 typedef struct {

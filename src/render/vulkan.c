@@ -1838,7 +1838,7 @@ b32 loadShaderPrograms(
 }
 
 
-const VkDescriptorPoolSize c_descriptor_pool_sizes[] = {
+const VkDescriptorPoolSize   c_descriptor_pool_sizes[] = {
     (VkDescriptorPoolSize) {
         .type            = VK_DESCRIPTOR_TYPE_SAMPLER,
         .descriptorCount = 4
@@ -1861,7 +1861,7 @@ const VkDescriptorPoolSize c_descriptor_pool_sizes[] = {
     }
 };
 
-VkDescriptorSetLayoutBinding c_set_0_bindings[] = (VkDescriptorSetLayoutBinding) {
+VkDescriptorSetLayoutBinding c_set_0_bindings[] = {
     (VkDescriptorSetLayoutBinding) {
         .binding         = 0,
         .stageFlags      = VK_SHADER_STAGE_ALL,
@@ -1888,7 +1888,7 @@ VkDescriptorSetLayoutBinding c_set_0_bindings[] = (VkDescriptorSetLayoutBinding)
     }
 };
 
-VkDescriptorSetLayoutBinding c_set_1_bindings_default[] = (VkDescriptorSetLayoutBinding) {
+VkDescriptorSetLayoutBinding c_set_1_bindings_default[] = {
     (VkDescriptorSetLayoutBinding) {
         .binding         = 0,
         .stageFlags      = VK_SHADER_STAGE_ALL,
@@ -1897,7 +1897,7 @@ VkDescriptorSetLayoutBinding c_set_1_bindings_default[] = (VkDescriptorSetLayout
     }
 };
 
-VkDescriptorSetLayoutBinding c_set_2_bindings[] = (VkDescriptorSetLayoutBinding) {
+VkDescriptorSetLayoutBinding c_set_2_bindings[] = {
     (VkDescriptorSetLayoutBinding) {
         .binding         = 0,
         .stageFlags      = VK_SHADER_STAGE_ALL,
@@ -1930,7 +1930,185 @@ VkDescriptorSetLayoutBinding c_set_2_bindings[] = (VkDescriptorSetLayoutBinding)
     }
 };
 
-... createResources also first decide how they are stored
+const VkFormat               c_format_table[] = {
+    [RENDER_FORMAT_NONE]                = VK_FORMAT_UNDEFINED,
+    [RENDER_FORMAT_R32G32B32A32_SFLOAT] = VK_FORMAT_R32G32B32A32_SFLOAT
+};
+
+b32 createTexturesAndBuffers(
+    VkDevice            device,
+    u32                 screen_x,
+    u32                 screen_y,
+    u32                 render_queue_id,
+    u32                 compute_queue_id,
+    u32                 transfer_queue_id,
+    const RenderImage*  image_infos,
+    const RenderBuffer* buffer_infos,
+    VkImage*            images,
+    VkBuffer*           buffers,
+    u32                 image_count,
+    u32                 buffer_count
+) {
+    /* all images and buffers have transfer src & dst usage as default */
+
+    VkBufferCreateInfo  buffer_create_info = (VkBufferCreateInfo){0};
+    VkImageCreateInfo   image_create_info  = (VkImageCreateInfo){0};
+    const RenderImage*  image_infos_end    = NULL;
+    const RenderImage*  image_info_i       = NULL;
+    const RenderBuffer* buffer_infos_end   = NULL;
+    const RenderBuffer* buffer_info_j      = NULL;
+    VkImage*            image_i            = NULL;
+    VkBuffer*           buffer_j           = NULL;
+    u32                 i                  = 0;
+    u32                 j                  = 0;
+    u32                 queue_ids[3]       = {0};
+    u32                 queue_count        = 0;
+
+    /* create VkImages */
+    image_infos_end = image_infos + image_count;
+    image_info_i    = image_infos;
+    image_i         = images;
+    i               = 0;
+    for(; image_info_i != image_infos_end; image_info_i++, image_i++, i++) {
+        /* image info */
+        image_create_info = (VkImageCreateInfo) {
+            .sType     = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format    = c_format_table[image_info_i->format],
+            .extent    = (VkExtent3D) {
+                .width  = (image_info_i->x == U32_MAX) ? screen_x : image_info_i->x,
+                .height = (image_info_i->y == U32_MAX) ? screen_y : image_info_i->y,
+                .depth  = 1
+            },
+            .mipLevels   = image_info_i->mip_levels,
+            .arrayLayers = image_info_i->z,
+            .samples     = VK_SAMPLE_COUNT_1_BIT,
+            .tiling      = VK_IMAGE_TILING_OPTIMAL,
+            .usage       = 0
+        };
+
+        /* select image usage flags based on type */
+        if(image_info_i->type == RENDER_RESOURCE_TYPE_COLOR_ATTACHMENT) {
+            image_create_info.usage = (
+                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT     |
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT
+            );
+        }
+        else if(image_info_i->type == RENDER_RESOURCE_TYPE_DEPTH_ATTACHMENT) {
+            image_create_info.usage = (
+                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | 
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT             | 
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT
+            );
+        }
+        else if(image_info_i->type != RENDER_RESOURCE_TYPE_GENRIC_IMAGE) {
+            LOG_ERROR("invalid image type id: %u/%u", i, image_count);
+            goto fail;
+        }
+
+        /* adjust usage depending on set bindings */
+        if(image_info_i->sampled_binding != U32_MAX) {
+            image_create_info.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+        }
+        if(image_info_i->storage_binding != U32_MAX) {
+            image_create_info.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        }
+
+        /* create image */
+        if(vkCreateImage(
+            device,
+            &image_create_info,
+            NULL,
+            image_i
+        ) != VK_SUCCESS) {
+            LOG_ERROR("failed to create image id: %u/%u", i, image_count);
+            goto fail;
+        }
+    }
+
+    /* create VkBuffers */
+    buffer_infos_end = buffer_infos + buffer_count;
+    buffer_info_j    = buffer_infos;
+    buffer_j         = buffers;
+    j                = 0;
+    for(; buffer_info_j != buffer_infos_end; buffer_info_j++, buffer_j++, j++) {
+        /* generic buffer info */
+        buffer_create_info = (VkBufferCreateInfo) {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .usage = 0,
+            .size  = buffer_info_j->size
+        };
+
+        /* determine buffer type (usage in vulkan terminology) */
+        if(buffer_info_j->type == RENDER_RESOURCE_TYPE_UNIFORM_BUFFER) {
+            buffer_create_info.usage = (
+                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | 
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT   | 
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+            );
+        }
+        else if(buffer_info_j->type == RENDER_RESOURCE_TYPE_STORAGE_BUFFER) {
+            buffer_create_info.usage = (
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | 
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT   | 
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+            );
+        }
+        else {
+            LOG_ERROR("invalid buffer type id: %u/%u", j, buffer_count);
+            goto fail;
+        }
+
+        /* add queue usage based on buffer flags */
+        if(buffer_info_j->flags & RENDER_RESOURCE_FLAG_RENDER_QUEUE && render_queue_id != U32_MAX) {
+            queue_ids[queue_count++] = render_queue_id;
+        }
+        if(buffer_info_j->flags & RENDER_RESOURCE_FLAG_COMPUTE_QUEUE && compute_queue_id != U32_MAX) {
+            queue_ids[queue_count++] = compute_queue_id;
+        }
+        if(buffer_info_j->flags & RENDER_RESOURCE_FLAG_TRANSFER_QUEUE && transfer_queue_id != U32_MAX) {
+            queue_ids[queue_count++] = transfer_queue_id;
+        }
+
+        /* if only 1 queue is using resource sharing mode is exclusive */
+        buffer_create_info.sharingMode           = (queue_count > 1) ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE;
+        buffer_create_info.queueFamilyIndexCount = (queue_count > 1) ? queue_count                : 0;
+        buffer_create_info.pQueueFamilyIndices   = (queue_count > 1) ? queue_ids                  : NULL;
+
+        /* create VkBuffer */
+        if(vkCreateBuffer(
+            device, 
+            &buffer_create_info, 
+            NULL,
+            buffer_j
+        ) != VK_SUCCESS) {
+            LOG_ERROR("failed to create buffer id: %u/%u", j, buffer_count);
+            goto fail;
+        }
+    }
+
+    return TRUE;
+
+    fail: {
+        if(buffer_count != 0) {
+            for(; buffer_j != buffers - 1; buffer_j--) {
+                if(*buffer_j != NULL) {
+                    vkDestroyBuffer(device, *buffer_j, NULL);
+                }
+            }   
+        }
+        if(image_count != 0) {
+            for(; image_i != images - 1; image_i--) {
+                if(*image_i != NULL) {
+                    vkDestroyImage(device, *image_i, NULL);
+                }
+            }
+        }
+
+        return FALSE;
+    }
+}
 
 b32 createDescriptorSets(
     VkDevice                              device,
